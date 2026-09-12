@@ -37,9 +37,17 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `05-boutique-pods.png` | `kubectl get pods -n boutique -o wide`，Pod 分散在两节点 | 待采集 |
-| `06-antiaffinity.png` | 反亲和生效证明（同一 Deployment 的副本在不同 NODE 列） | 待采集 |
-| `07-shop-page.png` | 浏览器访问 `http://<IP>:30080` 的商店页面 | 待采集 |
+| `05-boutique-pods.png` | `kubectl get pods -n boutique -o wide`：22 个 Pod 全 Running，**同时证明反亲和生效**（每个服务的两个副本 NODE 列不同） | 待采集 |
+| `06-ingress-nodeport.png` | `kubectl get svc -n traefik` + `kubectl get ingressroute -n boutique`：入口 NodePort 映射与路由规则 | 待采集 |
+| `07-shop-page.png` | 浏览器访问 `http://<ECS公网IP>:30080` 的商店页面 | 待采集 |
+| `08-traefik-dashboard.png` | （可选）`http://<ECS公网IP>:30800/dashboard/` Traefik 面板 | 待采集 |
+
+> **关于 05 与 06**：一张 `-o wide` 的输出同时能证明两件事——Pod 全部 Running，
+> 以及每个服务的两个副本落在不同节点（看 NODE 列）。所以 05 一张就够，
+> 06 改为「入口层」的证据，对应任务 5 的验收点（NodePort 暴露 + IngressRoute 路由）。
+>
+> **07 是这套截图里最有价值的一张**——它是整个项目第一个「看得见」的成果，
+> 面试时比任何终端输出都直观。
 
 ### S3 可观测性（任务 6）
 
