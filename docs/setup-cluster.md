@@ -59,7 +59,7 @@ EOF
 |---|---|---|---|---|
 | 1 | 自定义 TCP | 22/22 | 你的本机公网 IP/32 | SSH，别开 0.0.0.0/0 |
 | 1 | **全部** | **-1/-1** | **VPC 内网网段**（如 172.16.0.0/12） | ⚠️ **必须加！** 见下方说明 |
-| 1 | 自定义 TCP | 6443/6443 | 你的本机公网 IP/32 | 远程 kubectl（可选，见 3.4） |
+| 1 | 自定义 TCP | 6443/6443 | 你的本机公网 IP/32 | ⚠️ **建议不加**：远程 kubectl 走 SSH 隧道即可（3.4 节），不开这个端口更安全，也不受公网 IP 变更影响 |
 | 1 | 自定义 TCP | 30080/30080 | 0.0.0.0/0 | Traefik HTTP 入口 |
 | 1 | 自定义 TCP | 30443/30443 | 0.0.0.0/0 | Traefik HTTPS 入口 |
 | 1 | 自定义 TCP | 30300/30300 | 0.0.0.0/0（或限本机 IP） | Grafana |
@@ -459,7 +459,7 @@ K8S_VERSION="$(kubeadm version -o short)"          # 例如 v1.31.14
 sudo kubeadm init \
   --kubernetes-version="${K8S_VERSION}" \
   --pod-network-cidr=192.168.0.0/16 \
-  --apiserver-cert-extra-sans=<k8s-cp的公网IP>
+  --image-repository=registry.cn-hangzhou.aliyuncs.com/google_containers
 ```
 
 **三个参数逐个解释（面试会问）：**
@@ -468,21 +468,22 @@ sudo kubeadm init \
 |---|---|---|
 | `--kubernetes-version` | 指定控制面组件版本 | 必须与 kubelet 实际版本一致。计划文档里写死的 `v1.31.0` 有风险——如果 apt 装的是 1.31.14，就会去拉 1.31.0 的镜像，可能拉不到 |
 | `--pod-network-cidr=192.168.0.0/16` | Pod 网段 | **必须与 Calico 的默认配置一致**。Calico 的 `custom-resources.yaml` 里写死了 `192.168.0.0/16`，这里写别的就得同步改 |
-| `--apiserver-cert-extra-sans` | 给 apiserver 证书额外加一个 IP/域名 | ⚠️ **这是实现「远程 kubectl」的关键**，见下方说明 |
+| `--image-repository` | 控制面镜像的仓库前缀 | 大陆 ECS 拉不到 `registry.k8s.io`（会 307 跳到 Google `pkg.dev`），必须换阿里云仓库。**实测 8 个镜像全部可拉** |
 
-> ⚠️ **关于远程 kubectl（计划里的一个遗漏）**
+> ✅ **关于「远程 kubectl」：不要加 `--apiserver-cert-extra-sans`**
 >
-> 规格文档 S1 的验收标准写了「3 台 ECS kubeadm 集群 + Calico + **远程 kubectl**」，
-> 但实施计划的任务 3 里没有对应的步骤。这里补上。
+> 本手册早期版本建议加 `--apiserver-cert-extra-sans=<公网IP>`，**这个建议已废弃**，三条理由：
 >
-> 问题在于：kubeadm 生成的 apiserver 证书默认只签**内网 IP**。你在本机用
-> kubeconfig 连公网 IP:6443 时，会报 `x509: certificate is valid for 172.16.0.11,
-> not 47.xx.xx.11`——证书校验不过。
+> 1. **公网 IP 会变**。ECS 一旦更换公网 IP，证书里签的旧 IP 立刻失效，本机 kubectl 报
+>    `x509: certificate is valid for <旧IP>, not <新IP>`。要修复得重新签发 apiserver 证书
+>    并重启 apiserver——纯粹的维护负担，而且你没法预知 IP 什么时候变。
+> 2. **根本不需要它**。kubeadm 的 apiserver 证书默认已包含 `127.0.0.1` 和 `kubernetes`
+>    这个 DNS 名称，所以 **SSH 隧道方案天然可用**（见 3.4 节）。
+> 3. **不暴露更安全**。不加它就不必在安全组开 6443，apiserver 完全不暴露在公网。
+>    这是运维该有的默认姿势——面试时回答「我通过 SSH 隧道访问集群 API，没有把 6443
+>    暴露到公网」，比「我开了 6443 端口」专业得多。
 >
-> 所以要加 `--apiserver-cert-extra-sans=<公网IP>`，把公网 IP 写进证书 SAN 列表。
-> （如果 init 时忘了加，也可以事后改证书，但流程麻烦得多，不如一次做对。）
->
-> **不想暴露 6443 到公网的话**，用 SSH 隧道也完全可行，见 3.4 节方案 B。
+> 远程管理的方式见 3.4 节（SSH 隧道，一条命令）。
 
 **③ 配置 kubectl（cp 节点本地使用）**
 
@@ -681,53 +682,74 @@ kubectl label node k8s-w2 node-role.kubernetes.io/worker=worker
 
 ### 3.4 配置远程 kubectl（本机管理集群）
 
-**方案 A：证书已加公网 IP SAN（推荐，配置一次长期可用）**
+**推荐方案：SSH 隧道（不暴露 6443，公网 IP 变了也不受影响）**
 
-1. 安全组放行 6443，授权对象限你本机公网 IP/32（**不要开 0.0.0.0/0**）
-2. 本机安装 kubectl（Windows）：
+这是本手册**唯一推荐**的方式。它不需要任何额外的 init 参数，不需要在安全组放行 6443，
+也不用担心公网 IP 变更导致证书失效。
+
+1. 本机安装 kubectl（Windows）：
 
 ```bash
-# PowerShell 里执行
-curl.exe -LO "https://dl.k8s.io/release/v1.31.0/bin/windows/amd64/kubectl.exe"
-# 本机走代理下载，或从 cp 节点直接 scp 一份（/usr/bin/kubectl 是 Linux 二进制，不能用）
+# PowerShell 里执行（走本机代理下载）
+curl.exe -LO "https://dl.k8s.io/release/v1.31.14/bin/windows/amd64/kubectl.exe"
+# 注意：不要从 cp 节点 scp /usr/bin/kubectl —— 那是 Linux 二进制，Windows 上跑不了
 ```
 
-3. 把 kubeconfig 拷到本机：
+2. 把 kubeconfig 拷到本机：
 
 ```bash
-# 本机执行
+# 本机执行（Git Bash）
 mkdir -p ~/.kube
 scp root@<k8s-cp公网IP>:/etc/kubernetes/admin.conf ~/.kube/config
 ```
 
-4. 修改 server 地址为公网 IP：
+3. 把 server 地址指向本地隧道端口：
 
 ```bash
-# 本机执行（Git Bash）
-sed -i 's|server: https://172.16.0.11:6443|server: https://<k8s-cp公网IP>:6443|' ~/.kube/config
+# 本机执行。注意是 127.0.0.1，不是公网 IP
+sed -i 's|server: https://172.16.0.11:6443|server: https://127.0.0.1:6443|' ~/.kube/config
+```
+
+4. 开隧道并使用：
+
+```bash
+# 终端 A：保持这条命令不关（-N = 不执行远程命令，纯端口转发）
+ssh -N -L 6443:127.0.0.1:6443 root@<k8s-cp公网IP>
+
+# 终端 B：验证
 kubectl get nodes        # 验收：能列出三台节点
 ```
 
-> **安全提醒**：`admin.conf` 里是 **cluster-admin 全权凭据**。
-> 不要提交到 Git（`.gitignore` 已经排除了），不要发到群里，演示完考虑吊销或轮换。
-
-**方案 B：SSH 隧道（不暴露 6443，更安全）**
-
-```bash
-# 本机开着这条命令保持连接
-ssh -N -L 6443:127.0.0.1:6443 root@<k8s-cp公网IP>
-# 另开一个终端
-sed -i 's|server: https://172.16.0.11:6443|server: https://127.0.0.1:6443|' ~/.kube/config
-kubectl get nodes
-```
-
-> 方案 B 的证书校验怎么过？因为隧道的出口在 cp 节点本机，
-> apiserver 会认为请求来自 127.0.0.1，而 `admin.conf` 里签的 CA 就是本机的，
-> 把 server 改成 `https://127.0.0.1:6443` 后 **SAN 校验也是通过的**（kubeadm 默认证书含 127.0.0.1）。
-> 所以方案 B **不需要** `--apiserver-cert-extra-sans`，也不需要开安全组 6443。
+> **证书校验为什么能过？** kubeadm 签发的 apiserver 证书 SAN 里包含 `127.0.0.1`，
+> 而 kubeconfig 里的 server 正是 `https://127.0.0.1:6443`，主机名匹配 ✓
 >
-> 代价：每次要开隧道。适合安全敏感场景。想把"远程 kubectl 管理集群"写进简历，
-> 用方案 A 更好讲。
+> **万一你的证书里没有 127.0.0.1**（极少数情况），在 kubeconfig 里指定校验用的名称即可
+> ——`kubernetes` 这个 DNS 名称必定在 SAN 列表里：
+>
+> ```yaml
+> clusters:
+> - cluster:
+>     server: https://127.0.0.1:6443
+>     tls-server-name: kubernetes     # ← 加这一行
+> ```
+
+> **安全提醒**：`admin.conf` 是 **cluster-admin 全权凭据**。
+> 不要提交到 Git（`.gitignore` 已排除），不要发到群里，演示完考虑轮换。
+
+**（不推荐）方案 B：把 6443 暴露到公网**
+
+只在「必须从本机直连、且不接受开隧道」时才考虑，代价是：
+
+- 安全组要放行 6443（即便限制来源 IP，也扩大了攻击面）
+- 必须在 init 时加 `--apiserver-cert-extra-sans=<公网IP>`，而**公网 IP 一变就失效**
+  （报 `x509: certificate is valid for <旧IP>`），修复要重签证书并重启 apiserver
+- ECS 重建或弹性公网 IP 调整后容易踩这个坑，排查时又不容易第一时间想到证书
+
+简历里「远程管理集群」的写法建议：
+
+> 通过 SSH 隧道安全访问集群 API，未将 apiserver 直接暴露在公网
+
+比「开放 6443 端口」更能体现安全意识。
 
 ### 3.5 任务 3 验收清单
 
