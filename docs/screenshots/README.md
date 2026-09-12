@@ -17,7 +17,21 @@
 | `01-nodes-ready.png` | `kubectl get nodes -o wide`，三节点 Ready | 待采集 |
 | `02-calico-pods.png` | `kubectl get pods -n calico-system` 全 Running | 待采集 |
 | `03-kube-system.png` | `kubectl get pods -n kube-system` 全 Running | 待采集 |
-| `04-remote-kubectl.png` | 本机执行 `kubectl get nodes`（证明远程管理能力） | 待采集 |
+| `04-remote-kubectl.png` | **本机**执行 `kubectl get nodes`（证明远程管理能力） | 待采集 |
+
+> **关于 `04-remote-kubectl.png`**：它证明的是「能在本机管理集群」这件事，
+> 用的是 **SSH 隧道**方案（**不是**把 6443 暴露到公网）。做法见 `docs/setup-cluster.md` 3.4 节。
+> 核心就两条：
+>
+> ```bash
+> # 终端 A：保持隧道不关
+> ssh -N -L 6443:127.0.0.1:6443 root@<cp公网IP>
+> # 终端 B
+> kubectl get nodes
+> ```
+>
+> 这张图是 S1 验收标准「远程 kubectl」的实证，也是简历上「能远程管理集群」的证据。
+> 漏了不影响后面推进，但建议补上。
 
 ### S2 业务上线（任务 4-5）
 
