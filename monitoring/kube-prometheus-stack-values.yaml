@@ -1,0 +1,217 @@
+# =============================================================================
+# kube-prometheus-stack Helm values
+#
+# 安装：
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     -f monitoring/kube-prometheus-stack-values.yaml
+#
+# 这套 chart 一次装齐：Prometheus / Alertmanager / Grafana / node-exporter /
+# kube-state-metrics / Prometheus Operator / 100+ 条 K8s 官方告警规则。
+# 面试常问「你用的监控栈里各组件职责是什么」，见下方逐项注释。
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 让 Operator 的「选择器」不再绑定 Helm release 标签
+#
+# 这是本文件最关键的三个开关。默认情况下 Operator 只加载带
+# release=kube-prometheus-stack 标签的 ServiceMonitor / PrometheusRule /
+# AlertmanagerConfig。我们手写的规则文件不带该标签，会被**静默忽略**——
+# 表现为 kubectl apply 成功但 Prometheus 里什么都看不到，极难排查。
+# 设为 false 后，选择器为空 = 匹配所有命名空间下的全部对象。
+# -----------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    ruleSelectorNilUsesHelmValues: false
+    ruleNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+
+    # 数据保留期：3 节点小集群磁盘有限，15 天足够覆盖「压测 → 演练 → 写复盘」的全过程
+    retention: 15d
+    retentionSize: 8GB
+
+    # 抓取间隔：15s 是生产常用值；再密会显著增加存储与 CPU 开销
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+
+    # 单副本：3 节点集群内存有限。生产应设为 2 副本 + 反亲和
+    replicas: 1
+
+    resources:
+      requests:
+        cpu: 300m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+
+    # 数据落盘：需要集群有默认 StorageClass。
+    # 自建 kubeadm 集群**没有**默认 StorageClass，需先安装 local-path-provisioner，
+    # 否则 Pod 会卡在 Pending。未安装时请保持 enabled: false（用 emptyDir）。
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+    # ↑ 若尚未安装 local-path-provisioner，把上面 storageSpec 整段注释掉
+
+    # 允许 Prometheus 抓取其他命名空间的 ServiceMonitor（跨 ns 发现 Traefik 指标）
+    podMetadata:
+      labels:
+        app: prometheus
+
+alertmanager:
+  alertmanagerSpec:
+    # 同 prometheusSpec，必须关掉才能加载我们手写的 AlertmanagerConfig
+    alertmanagerConfigSelectorNilUsesHelmValues: false
+    alertmanagerConfigNamespaceSelector: {}
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+    # ↑ 同样：未装 local-path-provisioner 时注释掉 storage 段，改用 emptyDir
+
+# -----------------------------------------------------------------------------
+# Grafana：唯一对外暴露的 Web 界面（NodePort 30300）
+# -----------------------------------------------------------------------------
+grafana:
+  enabled: true
+  adminPassword: "admin123"     # 演示环境；生产应走 Secret 引用
+  service:
+    type: NodePort
+    nodePort: 30300
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 2Gi
+  # ↑ 未装 local-path-provisioner 时改为 enabled: false
+
+  # ---- 看板自动加载：把 Dashboard JSON 放进 ConfigMap，Grafana 自动装载 ----
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespaces:
+        - monitoring
+        - boutique
+      label: grafana_dashboard
+    datasources:
+      enabled: true
+
+  # ---- 预置 Loki 数据源：省去手工点界面，也让配置可版本化 ----
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100
+      jsonData:
+        maxLines: 1000
+        timeout: 60
+      isDefault: false
+
+  # 只保留必要的 Grafana 插件与配置，减少启动时间
+  grafana.ini:
+    server:
+      root_url: http://localhost:30300
+    analytics:
+      reporting_enabled: false
+    log:
+      level: warn
+
+# -----------------------------------------------------------------------------
+# 自建 kubeadm 集群的关键取舍
+#
+# kube-scheduler / kube-controller-manager / etcd 的 metrics 默认只监听
+# 127.0.0.1:10257 / 10259 / 2379，Prometheus 从 Pod IP 抓取会失败，
+# Targets 页面显示一片 DOWN，会掩盖真正需要关注的目标。
+# 两种处理方式，本文件选第二种：
+#   方案 A：改 /etc/kubernetes/manifests/*.yaml 的 --bind-address=0.0.0.0（暴露控制面指标，
+#          需自行承担安全面扩大，生产不推荐裸奔）
+#   方案 B：关闭这三个 ServiceMonitor，专注节点层 + 容器层 + 入口层指标（本文件采用）
+# -----------------------------------------------------------------------------
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: true          # kube-proxy 的 metrics 端口 10249 默认可从 Pod IP 访问，保留
+
+# node-exporter 用 hostNetwork 采集宿主机指标，DaemonSet 需覆盖全部节点
+nodeExporter:
+  enabled: true
+prometheus-node-exporter:
+  hostNetwork: true
+  tolerations:
+    - operator: Exists
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # 关闭不需要的 admission webhook（自建集群下证书轮换常出问题，非生产可省）
+  admissionWebhooks:
+    enabled: false
+  tls:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# 默认规则集：chart 自带 100+ 条 K8s 官方告警规则，是很好的学习材料，
+# 但 InfoInhibitor / Watchdog 这类规则在演示环境纯属噪音，直接关掉。
+# 其余保留——面试时可答「我用的是社区经过生产验证的规则集，不是自己拍脑袋写的阈值」。
+# -----------------------------------------------------------------------------
+defaultRules:
+  create: true
+  rules:
+    infoInhibitor: false
+    watchdog: false
+    # 以下规则在小集群里极易误报，按需关闭
+    KubeMemoryOvercommit: false
+    KubeCPUOvercommit: false
+    CPUThrottlingHigh: false

@@ -1,0 +1,110 @@
+# =============================================================================
+# Alertmanager 双通道告警路由
+#
+# 通道职责划分（体现告警分级意识，面试常问）：
+#   critical → 邮件 + 钉钉（立即处理，钉钉有声音提醒）
+#   warning  → 仅邮件（批量汇总，避免告警疲劳）
+#
+# 前置步骤（必须按顺序执行，否则本文件不生效）：
+#
+# 1) 创建邮箱授权码 Secret（不要把密码写进 YAML 提交到仓库！）
+#    kubectl create secret generic alertmanager-email-secret \
+#      -n monitoring \
+#      --from-literal=password='<QQ邮箱SMTP授权码>'
+#
+# 2) 部署钉钉转发组件（Alertmanager 无法直接发钉钉，需要 webhook 转换器）
+#    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#    helm install prometheus-webhook-dingtalk prometheus-community/prometheus-webhook-dingtalk \
+#      -n monitoring \
+#      --set config.targets.webhook1.url='https://oapi.dingtalk.com/robot/send?access_token=<token>' \
+#      --set config.targets.webhook1.secret='<加签密钥>'
+#
+#    webhook URL 中的 webhook1 对应上面 --set config.targets.webhook1 的名字
+#
+# 3) 让 Alertmanager 发现本配置：kube-prometheus-stack values 中需设置
+#      alertmanager.alertmanagerSpec.alertmanagerConfigSelectorNilUsesHelmValues: false
+#    否则只有带 release=kube-prometheus-stack 标签的 AlertmanagerConfig 会被加载。
+#
+# 4) 确认生效：
+#    kubectl -n monitoring port-forward svc/kube-prometheus-stack-alertmanager 9093:9093
+#    浏览器打开 http://localhost:9093  → Status → Config 中应能看到本配置的 receiver
+#
+# 触发测试（1-2 分钟内应收到通知）：
+#   kubectl scale deploy/frontend -n boutique --replicas=0
+#   # 等待告警到达并记录时间
+#   kubectl scale deploy/frontend -n boutique --replicas=2
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: boutique-alertmanager-config
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    alertmanagerConfig: boutique
+spec:
+  route:
+    # 根路由：默认发给邮件（收口通道）
+    receiver: email
+    # 分组维度：同一告警名 + 同一命名空间 + 同一级别合并为一条通知，
+    # 避免一次节点故障触发几十条独立通知
+    groupBy: ['alertname', 'namespace', 'severity']
+    groupWait: 10s        # 首次通知前的等待，攒一下同组告警
+    groupInterval: 30s    # 同组内有新告警时的追加间隔
+    repeatInterval: 2h    # 未恢复告警的重复提醒间隔
+    routes:
+      # critical 告警：邮件 + 钉钉双通道，continue=true 表示继续匹配后面的兄弟路由
+      - receiver: dingtalk
+        matchers:
+          - name: severity
+            value: critical
+            matchType: "="
+        continue: true
+        groupWait: 5s
+        repeatInterval: 30m
+
+      # critical 告警：同时发邮件（与上面形成双通道）
+      - receiver: email
+        matchers:
+          - name: severity
+            value: critical
+            matchType: "="
+        groupWait: 5s
+        repeatInterval: 1h
+
+      # warning 告警：仅邮件，且拉长重复间隔，避免告警疲劳
+      - receiver: email
+        matchers:
+          - name: severity
+            value: warning
+            matchType: "="
+        repeatInterval: 6h
+
+  receivers:
+    # -------------------------------------------------------------------------
+    # 通道一：邮件（QQ 邮箱）
+    # -------------------------------------------------------------------------
+    - name: email
+      emailConfigs:
+        - to: '3304345637@qq.com'
+          from: '3304345637@qq.com'
+          # 465 为 SMTPS（隐式 TLS）；若发信失败可改用 587 + requireTLS: true
+          smarthost: 'smtp.qq.com:465'
+          authUsername: '3304345637@qq.com'
+          authPassword:
+            name: alertmanager-email-secret
+            key: password
+          # 465 端口本身即 TLS，无需 STARTTLS
+          requireTLS: false
+          # 恢复通知同样发送——「恢复」比「告警」更能体现监控体系闭环
+          sendResolved: true
+          headers:
+            Subject: '{{ template "email.default.subject" . }}'
+
+    # -------------------------------------------------------------------------
+    # 通道二：钉钉（经 prometheus-webhook-dingtalk 转换）
+    # -------------------------------------------------------------------------
+    - name: dingtalk
+      webhookConfigs:
+        - url: 'http://prometheus-webhook-dingtalk.monitoring.svc:8060/dingtalk/webhook1/send'
+          sendResolved: true

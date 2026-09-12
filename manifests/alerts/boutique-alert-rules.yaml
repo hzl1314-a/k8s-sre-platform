@@ -1,0 +1,136 @@
+# =============================================================================
+# 告警规则（PrometheusRule）
+#
+# 前置条件：
+#   kube-prometheus-stack 的 values 中必须设置
+#     prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues: false
+#   否则 Prometheus 只会加载带 release=kube-prometheus-stack 标签的 Rule，
+#   本文件会被静默忽略（现象：kubectl apply 成功，但 Prometheus UI 里看不到规则）。
+#
+# 验证规则是否被加载：
+#   kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+#   浏览器打开 http://localhost:9090/rules
+#
+# 指标来源说明：
+#   node_*                        → node-exporter（节点层）
+#   kube_*                        → kube-state-metrics（K8s 对象层）
+#   traefik_service_requests_total→ Traefik（入口层，需在 traefik-values.yaml 中
+#                                   开启 metrics.prometheus.serviceMonitor）
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: boutique-alert-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # -------------------------------------------------------------------------
+    # 第一组：节点资源水位
+    # -------------------------------------------------------------------------
+    - name: boutique.node.rules
+      rules:
+        - alert: NodeMemoryHigh
+          # 用「可用内存 / 总内存」计算，比 MemFree 准确（MemAvailable 已扣除内核缓存）
+          # 节点标签 instance 形如 172.16.0.11:9100，面试时能据此定位到具体 ECS
+          expr: |
+            (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+            component: node
+          annotations:
+            summary: "节点 {{ $labels.instance }} 内存水位超过 85%"
+            description: "当前内存使用率 {{ printf \"%.1f\" $value }}%，持续 5 分钟。可能原因：Pod 内存泄漏、requests/limits 设置不合理、或节点上存在未受控进程。"
+            action: "1) kubectl top node 确认；2) kubectl top pods -A --sort-by=memory 定位大户；3) 检查该节点 Pod 的 requests 是否超卖。"
+
+        - alert: NodeNotReady
+          # 节点失联：kube-state-metrics 报告的 Ready 条件为假
+          expr: |
+            kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: node
+          annotations:
+            summary: "节点 {{ $labels.node }} 处于 NotReady 状态"
+            description: "节点已失联超过 1 分钟。若为 kubelet 或网络故障，其上 Pod 将在 5 分钟后被驱逐并重建。"
+            action: "1) SSH 或控制台 VNC 检查节点状态；2) systemctl status kubelet；3) 若节点确认失联，kubectl drain 后重建。"
+
+    # -------------------------------------------------------------------------
+    # 第二组：业务 Pod 健康度
+    # -------------------------------------------------------------------------
+    - name: boutique.pod.rules
+      rules:
+        - alert: PodFrequentRestart
+          # increase() 处理 counter 重置，统计 15 分钟窗口内的增量
+          # 排除已完成的一次性 Pod（succeeded），只看仍在运行的容器
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="boutique"}[15m]) > 3
+          for: 0m
+          labels:
+            severity: warning
+            component: pod
+          annotations:
+            summary: "Pod {{ $labels.pod }} 15 分钟内重启超过 3 次"
+            description: "容器反复重启通常指向：OOMKilled（内存 limit 过小）、探针配置不当（liveness 误杀）、或依赖服务不可用导致启动失败。"
+            action: "1) kubectl describe pod <pod> -n boutique 看 Last State 的 Reason；2) kubectl logs <pod> -n boutique --previous 看崩溃前日志；3) 若为 OOMKilled 则上调 memory limit 或排查泄漏。"
+
+        - alert: DeploymentReplicasUnavailable
+          # 「可用副本数为 0」= 服务彻底不可用，这是最严重的一类告警
+          # 用 sum by 聚合，避免同一 Deployment 多条时间序列重复告警
+          expr: |
+            sum by (namespace, deployment) (
+              kube_deployment_status_replicas_available{namespace="boutique"}
+            ) == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: service
+          annotations:
+            summary: "服务 {{ $labels.deployment }} 无可用副本"
+            description: "{{ $labels.deployment }} 在 namespace {{ $labels.namespace }} 中可用副本数为 0，用户请求将全部失败。"
+            action: "1) kubectl get pods -n boutique -l app={{ $labels.deployment }}；2) kubectl describe deployment {{ $labels.deployment }} -n boutique 查看 Conditions；3) 检查是否为镜像拉取失败、调度失败或探针失败。"
+
+    # -------------------------------------------------------------------------
+    # 第三组：入口层错误率
+    # 依赖 Traefik 暴露 Prometheus 指标（traefik-values.yaml 中已开启）
+    # 若该组规则未生效，先确认 Prometheus 的 Targets 页面存在 traefik job
+    # -------------------------------------------------------------------------
+    - name: boutique.ingress.rules
+      rules:
+        - alert: IngressHighErrorRate
+          # 5xx 占比（%）。分母加 clamp_min 防止零流量时除以 0 产生 NaN
+          # 注意：这是「入口观测到的错误率」，与业务自身埋点是两个视角，
+          #      运维侧更关心用户实际感知到的失败比例
+          expr: |
+            (
+              sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
+              /
+              clamp_min(sum(rate(traefik_service_requests_total[5m])), 0.001)
+            ) * 100 > 1
+          for: 5m
+          labels:
+            severity: critical
+            component: ingress
+          annotations:
+            summary: "入口 5xx 错误率超过 1%"
+            description: "过去 5 分钟 5xx 占比 {{ printf \"%.2f\" $value }}%，说明有用户请求正在失败。"
+            action: "1) 查看受影响的后端服务：sum by (service) (rate(traefik_service_requests_total{code=~\"5..\"}[5m]))；2) 查看该服务 Pod 日志；3) 确认是否为新版本发布引入。"
+
+        - alert: IngressLatencyHigh
+          # P95 延迟 > 2 秒。用直方图分位数，比平均延迟更能反映长尾体验
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (le) (rate(traefik_service_request_duration_seconds_bucket[5m]))
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+            component: ingress
+          annotations:
+            summary: "入口 P95 延迟超过 2 秒"
+            description: "过去 5 分钟 P95 响应时间为 {{ printf \"%.2f\" $value }} 秒。"
+            action: "1) kubectl top pods -n boutique 排查资源瓶颈；2) 检查是否有服务被限流或排队；3) 结合 HPA 副本数判断是否为容量不足。"

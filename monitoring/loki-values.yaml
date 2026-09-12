@@ -1,0 +1,107 @@
+# =============================================================================
+# Loki Helm values（单二进制模式）
+#
+# 安装：
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm repo update
+#   helm install loki grafana/loki -n monitoring -f monitoring/loki-values.yaml
+#
+# 为什么选 Loki 而不是 ELK/EFK：
+#   ELK 对全文建倒排索引，索引本身可能比日志还大；Loki 只对标签建索引，
+#   正文压缩后原样存储，资源占用低一个量级，且与 Grafana 原生集成。
+#   代价：不支持全文检索（只能按标签 + grep 式过滤）。对「按 Pod/时间范围看日志」
+#   这个主场景完全够用——这是典型的「先想清楚查询模式再选型」。
+#
+# 为什么用 SingleBinary：
+#   3 节点小集群，日志量少。微服务模式（read/write/backend 分离）是给
+#   日处理 TB 级日志的场景准备的，在这个规模下纯属增加运维复杂度。
+# =============================================================================
+deploymentMode: SingleBinary
+
+# 微服务模式的组件全部关掉，避免创建无用的 StatefulSet
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+loki:
+  auth_enabled: false          # 单租户，省去建 org 的麻烦
+
+  commonConfig:
+    replication_factor: 1      # 单副本，无冗余（演示环境取舍）
+
+  # ---- 存储：filesystem + emptyDir，不依赖 StorageClass ----
+  # 若已安装 local-path-provisioner，可改为 pvc（见下方 singleBinary.persistence）
+  storage:
+    type: filesystem
+
+  # ---- Schema：v13 + tsdb 是 Loki 3.x 的推荐配置 ----
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  limits_config:
+    retention_period: 168h         # 日志保留 7 天：够覆盖演练→复盘的周期
+    ingestion_rate_mb: 8           # 限流，防止某个服务刷日志打爆 Loki
+    ingestion_burst_size_mb: 16
+    max_query_series: 5000
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+
+  # 关闭 pattern ingester：它是实验特性，且额外占内存
+  pattern_ingester:
+    enabled: false
+  analytics:
+    reporting_enabled: false
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  persistence:
+    # 关闭持久化 → 使用 emptyDir。Pod 重建会丢历史日志。
+    # 演示场景可接受；若要持久化：先装 local-path-provisioner，
+    # 再把 enabled 改为 true 并设置 storageClass: local-path
+    enabled: false
+    storageClass: local-path
+
+# 关闭缓存组件（它们依赖 memcached，小规模下收益为负）
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# 关闭自监控与 canary，减少资源占用与噪音告警
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+monitoring:
+  selfMonitoring:
+    enabled: false
+    grafanaAgent:
+      installOperator: false
+  lokiCanary:
+    enabled: false
+  # Loki 自身指标仍需被 Prometheus 抓取（用于观察日志写入速率）
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+
+# 关闭 gateway：省一层 nginx 代理，Grafana 直连 loki:3100
+gateway:
+  enabled: false

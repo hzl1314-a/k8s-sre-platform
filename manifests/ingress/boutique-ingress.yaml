@@ -1,0 +1,80 @@
+# =============================================================================
+# Online Boutique 入口路由（Traefik IngressRoute CRD）
+#
+# 为什么用 IngressRoute 而不是标准 Ingress：
+#   标准 Ingress 只支持 host/path → service 的基础映射，能力被 annotation 撑爆；
+#   IngressRoute 用 CRD 表达中间件（限流、重试、鉴权），配置与逻辑分离。
+#   面试可对比：标准 Ingress 可移植性强但表达能力弱，CRD 反之。
+#
+# 为什么没有 Host 规则：
+#   当前用「公网 IP + NodePort」访问，没有域名，因此按 PathPrefix 全量兜底。
+#   二期备案域名后，把 match 换成 Host(`shop.example.com`) 即可，其余不变。
+#
+# 应用：
+#   kubectl apply -f manifests/ingress/boutique-ingress.yaml
+# 验证：
+#   kubectl get ingressroute -n boutique
+#   curl -I http://<任一节点公网IP>:30080/
+# =============================================================================
+
+# ---- 中间件一：限流，保护后端不被突发流量打垮 ----
+# 说明：压测（任务 8）时会先注掉本中间件，否则 hey 的并发会被限流，
+#       HPA 永远等不到 CPU 飙升。演练时按需开关，这本身也是运维决策。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: boutique-ratelimit
+  namespace: boutique
+spec:
+  rateLimit:
+    average: 200          # 平均每秒允许 200 请求
+    burst: 400            # 突发上限
+    period: 1s
+---
+# ---- 中间件二：安全响应头 ----
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: boutique-headers
+  namespace: boutique
+spec:
+  headers:
+    stsSeconds: 31536000
+    contentTypeNosniff: true
+    browserXssFilter: true
+    referrerPolicy: same-origin
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: boutique
+  namespace: boutique
+  labels:
+    app: boutique
+spec:
+  entryPoints:
+    - web             # 对应 traefik-values.yaml 中 ports.web（NodePort 30080）
+  routes:
+    # 主路由：全部路径转发到 frontend。
+    # Online Boutique 的 frontend 是单体入口页面，内部再调其他 10 个服务的 gRPC。
+    - match: PathPrefix(`/`)
+      kind: Rule
+      middlewares:
+        - name: boutique-headers
+        # 默认不挂限流，需要时取消下一行注释
+        # - name: boutique-ratelimit
+      services:
+        - name: frontend
+          port: 80          # frontend Service 的 spec.ports[0].port
+          # 启用负载均衡到 Pod 直接端口（可选）：Traefik 默认已做轮询，
+          # 如需 k8s 原生 LB 语义可改为 passHostHeader / sticky 等配置
+          strategy: RoundRobin
+
+    # ---- Traefik Dashboard（可选，暴露在内网即可，不建议公网开放） ----
+    # 如需访问：把下面的 Host 换成节点公网 IP → http://<IP>:30080/dashboard/
+    # 提醒：这是管理面入口，暴露到公网等于把集群路由拓扑公开，仅建议临时开启并录屏
+    # - match: PathPrefix(`/dashboard`)
+    #   kind: Rule
+    #   services:
+    #     - name: api@internal
+    #       kind: TraefikService

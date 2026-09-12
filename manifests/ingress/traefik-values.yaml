@@ -1,0 +1,102 @@
+# =============================================================================
+# Traefik Helm values
+#
+# 安装：
+#   helm repo add traefik https://traefik.github.io/charts
+#   helm repo update
+#   helm install traefik traefik/traefik --version 28.0.0 \
+#     -n traefik --create-namespace \
+#     -f manifests/ingress/traefik-values.yaml
+#
+# 为什么用 NodePort 而不是 LoadBalancer：
+#   大陆 ECS 没有云厂商 LB 集成（不像 ACK 有 SLB 自动接管），
+#   裸金属/自建集群下 LoadBalancer 类型会永远 Pending。
+#   公网 IP + NodePort 高位端口可零备案直接用，这是大陆环境的务实选择。
+#
+# 端口占用冲突提示：
+#   30080/30443 属于 NodePort 默认范围（30000-32767），kube-proxy 会在
+#   **每个节点**的该端口上监听。因此访问任意一台 ECS 的公网 IP:30080 都能通，
+#   这本身就是一种最朴素的入口高可用。
+# =============================================================================
+
+# ---- 副本与调度：2 副本 + 反亲和，避免单节点故障导致入口全挂 ----
+deployment:
+  replicas: 2
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+
+# ---- 入口端口：绑定到固定 NodePort ----
+ports:
+  web:
+    port: 8000
+    nodePort: 30080
+    exposedPort: 80
+    protocol: TCP
+    # 演练时可在这里加 redirectTo 强制跳转 websecure
+  websecure:
+    port: 8443
+    nodePort: 30443
+    exposedPort: 443
+    protocol: TCP
+
+service:
+  type: NodePort
+  # 关闭 externalTrafficPolicy: Local 之外的干扰项，保持默认 Cluster 策略，
+  # 好处是即使本节点上无 Traefik 副本，请求也能被转发到其他节点
+  externalTrafficPolicy: Cluster
+
+# ---- Dashboard：走 IngressRoute 暴露，便于讲解 CRD 路由能力 ----
+ingressRoute:
+  dashboard:
+    enabled: true
+
+# ---- Prometheus 指标：本项目的入口层可观测性数据源 ----
+metrics:
+  prometheus:
+    # 让 Traefik 暴露 /metrics 供 Prometheus 抓取
+    service:
+      enabled: true
+    serviceMonitor:
+      enabled: true
+      # 注意：ServiceMonitor 会被 Prometheus 跨命名空间发现，
+      # 前提是 kube-prometheus-stack 中 serviceMonitorSelectorNilUsesHelmValues=false
+      # 并且 serviceMonitorNamespaceSelector 允许 traefik 命名空间
+      interval: 30s
+      additionalLabels:
+        release: kube-prometheus-stack
+
+# ---- 访问日志：排查 4xx/5xx 时的一手材料，同时用于 Loki 日志演示 ----
+logs:
+  general:
+    level: INFO
+  access:
+    enabled: true
+    # 保留默认格式即可，字段含 ClientHost / RequestPath / DownstreamStatus
+
+# ---- 资源限额：入口组件是流量必经之路，给足但设上限 ----
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# ---- 探针调优：默认探针在高负载下可能误判，放宽阈值 ----
+livenessProbe:
+  failureThreshold: 3
+  initialDelaySeconds: 10
+  periodSeconds: 10
+readinessProbe:
+  failureThreshold: 3
+  initialDelaySeconds: 10
+  periodSeconds: 10
+
+# 大陆 ECS 拉取 Traefik 官方镜像（docker.io）走阿里云镜像加速即可，无需改动 image

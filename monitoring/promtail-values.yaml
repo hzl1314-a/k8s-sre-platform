@@ -1,0 +1,59 @@
+# =============================================================================
+# Promtail Helm values（日志采集 Agent）
+#
+# 安装：
+#   helm install promtail grafana/promtail -n monitoring -f monitoring/promtail-values.yaml
+#
+# Promtail 以 DaemonSet 部署，每个节点一个 Pod，职责：
+#   1. 挂载宿主机 /var/log/pods（只读）——这是 containerd 写容器 stdout/stderr 的位置
+#   2. 从 Kubernetes API 发现 Pod 元数据，给每行日志打上 namespace/pod/container 标签
+#   3. 输出到 Loki 的 push API
+#
+# 为什么必须挂 /var/log/pods：
+#   容器日志由 kubelet 按 CRI 规范落在宿主机磁盘，Promtail 在容器里干活，
+#   不挂宿主机目录就什么都读不到——这是面试常被追问的实现细节。
+# =============================================================================
+
+config:
+  clients:
+    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+      # 批处理参数：攒够一批再发，降低 Loki 压力
+      batchwait: 1s
+      batchsize: 1048576
+
+  snippets:
+    # 默认已包含 /var/log/pods/*/*/*.log 的采集配置与 kubernetes_sd 元数据发现，
+    # 这里只补一条：给所有日志加集群标识，方便日后多集群扩展时区分来源
+    extraRelabelConfigs:
+      - action: replace
+        source_labels: []
+        target_label: cluster
+        replacement: aliyun-k8s-3node
+
+    # 日志行预处理：CRI 格式的正文前有时间戳与前缀，cri 阶段负责剥离
+    pipelineStages:
+      - cri: {}
+
+# DaemonSet 必须覆盖所有节点，包括带污点的控制面
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+
+# Promtail 需读取宿主机日志，以 root 运行并只读挂载
+podSecurityContext:
+  runAsUser: 0

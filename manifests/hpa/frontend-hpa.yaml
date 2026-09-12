@@ -1,0 +1,59 @@
+# =============================================================================
+# frontend 自动扩缩容
+#
+# 前置条件（否则 HPA 会显示 <unknown>/60% 且永不扩容）：
+#   1. metrics-server 已部署且 `kubectl top pods -n boutique` 有输出
+#   2. 目标 Deployment 的容器必须声明 resources.requests.cpu
+#      HPA 的「CPU 利用率」= 实际用量 / requests，没有 requests 就无法计算百分比
+#
+# 观察命令：
+#   kubectl get hpa -n boutique -w
+#   kubectl describe hpa frontend-hpa -n boutique    # Events 段会记录每次扩缩容决策
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: boutique
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+
+  minReplicas: 2
+  maxReplicas: 8
+
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 60% 是利用率而非绝对核数：意为「平均每 Pod CPU 用量达到其 request 的 60% 时扩容」
+          averageUtilization: 60
+
+  behavior:
+    # ---- 扩容：要快。流量突增时缓慢扩容等于故障 ----
+    scaleUp:
+      # 稳定窗口设为 0：一旦超阈值立即扩容，不做压制
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100          # 一次最多翻倍
+          periodSeconds: 15
+        - type: Pods
+          value: 4            # 或一次最多加 4 个 Pod
+          periodSeconds: 15
+      # 两条策略取「更激进」的那条，保证扩容速度
+      selectPolicy: Max
+
+    # ---- 缩容：要慢。指标抖动导致副本反复伸缩会放大风险 ----
+    scaleDown:
+      # 5 分钟稳定窗口：过去 5 分钟内的推荐副本数取最大值，避免毛刺触发缩容
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25           # 每次最多缩掉 25%
+          periodSeconds: 60
+      selectPolicy: Min       # 取更保守的那条

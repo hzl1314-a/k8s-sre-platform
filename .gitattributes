@@ -1,0 +1,19 @@
+# 统一换行符为 LF
+#
+# 为什么重要：本仓库的 shell 脚本要 scp 到 Ubuntu ECS 上执行。
+# 如果 Windows 的 core.autocrlf 把脚本转成 CRLF，Linux 上会报
+#   bash: ./mirror-push.sh: /bin/bash^M: bad interpreter: No such file or directory
+# 这类问题极难一眼看穿。这里强制 LF，从源头避免。
+
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+
+*.png   binary
+*.jpg   binary
+*.mp4   binary
+*.tgz   binary

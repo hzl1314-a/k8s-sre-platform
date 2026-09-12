@@ -1,0 +1,29 @@
+# 本地产物
+*.log
+probe.log
+*.tgz
+*.tar
+
+# 下载的官方清单（体积大、可由上游重新拉取，不入库；但保留说明文件）
+downloads/*
+!downloads/README.md
+calico-operator.yaml
+tigera-operator.yaml
+calico-custom-resources.yaml
+kubernetes-manifests.yaml
+metrics-server-components.yaml
+traefik-*.tgz
+*-values-*.tgz
+
+# 敏感信息：kubeconfig 与告警凭据
+*.kubeconfig
+kubeconfig
+admin.conf
+*-secret.yaml
+.env
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
