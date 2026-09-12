@@ -1,44 +1,64 @@
 # =============================================================================
-# kube-prometheus-stack Helm values
+# kube-prometheus-stack Helm values —— 适配 chart 90.1.1（app v0.93.1）
 #
-# 安装：
-#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-#   helm repo update
-#   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-#     -n monitoring --create-namespace \
-#     -f monitoring/kube-prometheus-stack-values.yaml
+# 安装步骤（在 k8s-cp 上）：
+#
+#   1) 先建 Grafana 管理员 Secret（90.x 移除了 values 里的 adminPassword）
+#      kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+#      kubectl -n monitoring create secret generic grafana-admin \
+#        --from-literal=admin-user=admin \
+#        --from-literal=admin-password='改成你的密码'
+#
+#   2) 再装 chart
+#      helm install kube-prometheus-stack ./kube-prometheus-stack-90.1.1.tgz \
+#        -n monitoring --create-namespace \
+#        -f kube-prometheus-stack-values.yaml
 #
 # 这套 chart 一次装齐：Prometheus / Alertmanager / Grafana / node-exporter /
 # kube-state-metrics / Prometheus Operator / 100+ 条 K8s 官方告警规则。
-# 面试常问「你用的监控栈里各组件职责是什么」，见下方逐项注释。
+#
+# ⚠️ 本文件是按 chart 90.1.1 的**实际 values 逐字段核对**后写的，
+#    与网上多数教程（针对 5x/6x 版本）有明确差异，不要混用：
+#      · grafana.adminPassword 已被移除        → 改用 grafana.admin.existingSecret
+#      · alertmanagerSpec 没有 alertmanagerConfigSelectorNilUsesHelmValues
+#                                              → 用 alertmanagerConfigSelector: {} 等价
+#      · CRD 由子 chart `crds` 管理             → crds.enabled
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 让 Operator 的「选择器」不再绑定 Helm release 标签
-#
-# 这是本文件最关键的三个开关。默认情况下 Operator 只加载带
-# release=kube-prometheus-stack 标签的 ServiceMonitor / PrometheusRule /
-# AlertmanagerConfig。我们手写的规则文件不带该标签，会被**静默忽略**——
-# 表现为 kubectl apply 成功但 Prometheus 里什么都看不到，极难排查。
-# 设为 false 后，选择器为空 = 匹配所有命名空间下的全部对象。
+# CRD：90.x 把 CRD 拆成了独立的子 chart
 # -----------------------------------------------------------------------------
+crds:
+  enabled: true
+
+# =============================================================================
+# 镜像：chart 的镜像来自 5 个不同 registry（quay.io / docker.io /
+#       registry.k8s.io / ghcr.io），无法用单一 global.imageRegistry 覆盖，
+#       必须逐项指定。全部实测在镜像站有缓存。
+#       这些 chart 的 tag 大多是模板默认值，所以只需覆盖 registry 一项。
+# =============================================================================
+
 prometheus:
   prometheusSpec:
+    image:
+      registry: quay.m.daocloud.io
+
+    # ---- 最关键的三个开关 ----
+    # 默认情况下 Operator 只加载带 release=kube-prometheus-stack 标签的
+    # ServiceMonitor / PrometheusRule。我们手写的规则文件不带该标签，
+    # 会被**静默忽略**（现象：kubectl apply 成功，但 Prometheus UI 里
+    # 什么都看不到，极难排查）。设为 false = 选择器为空 = 匹配所有。
     serviceMonitorSelectorNilUsesHelmValues: false
     serviceMonitorNamespaceSelector: {}
     ruleSelectorNilUsesHelmValues: false
     ruleNamespaceSelector: {}
     podMonitorSelectorNilUsesHelmValues: false
 
-    # 数据保留期：3 节点小集群磁盘有限，15 天足够覆盖「压测 → 演练 → 写复盘」的全过程
+    # 数据保留期：3 节点小集群磁盘有限，15 天足够覆盖「压测 → 演练 → 写复盘」
     retention: 15d
     retentionSize: 8GB
-
-    # 抓取间隔：15s 是生产常用值；再密会显著增加存储与 CPU 开销
     scrapeInterval: 15s
     evaluationInterval: 15s
-
-    # 单副本：3 节点集群内存有限。生产应设为 2 副本 + 反亲和
     replicas: 1
 
     resources:
@@ -49,28 +69,30 @@ prometheus:
         cpu: "1"
         memory: 2Gi
 
-    # 数据落盘：需要集群有默认 StorageClass。
-    # 自建 kubeadm 集群**没有**默认 StorageClass，需先安装 local-path-provisioner，
-    # 否则 Pod 会卡在 Pending。未安装时请保持 enabled: false（用 emptyDir）。
-    storageSpec:
-      volumeClaimTemplate:
-        spec:
-          storageClassName: local-path
-          accessModes: ["ReadWriteOnce"]
-          resources:
-            requests:
-              storage: 10Gi
-    # ↑ 若尚未安装 local-path-provisioner，把上面 storageSpec 整段注释掉
+    # ⚠️ 不挂 PVC：自建 kubeadm 集群没有默认 StorageClass，挂了会一直 Pending。
+    #    代价是 Prometheus 重启丢历史指标，演示场景可接受。
+    #    要持久化：先装 local-path-provisioner，再打开下面的配置。
+    # storageSpec:
+    #   volumeClaimTemplate:
+    #     spec:
+    #       storageClassName: local-path
+    #       accessModes: ["ReadWriteOnce"]
+    #       resources:
+    #         requests:
+    #           storage: 10Gi
 
-    # 额外标签，便于在指标里标识 Prometheus 自身
     podMetadata:
       labels:
         app: prometheus
 
 alertmanager:
   alertmanagerSpec:
-    # 同 prometheusSpec，必须关掉才能加载我们手写的 AlertmanagerConfig
-    alertmanagerConfigSelectorNilUsesHelmValues: false
+    image:
+      registry: quay.m.daocloud.io
+    # 空选择器 = 匹配所有 AlertmanagerConfig
+    # （等价于老教程里的 alertmanagerConfigSelectorNilUsesHelmValues: false，
+    #   该字段在 90.x 的 alertmanagerSpec 下已不存在）
+    alertmanagerConfigSelector: {}
     alertmanagerConfigNamespaceSelector: {}
     replicas: 1
     resources:
@@ -80,25 +102,43 @@ alertmanager:
       limits:
         cpu: 200m
         memory: 256Mi
-    storage:
-      volumeClaimTemplate:
-        spec:
-          storageClassName: local-path
-          accessModes: ["ReadWriteOnce"]
-          resources:
-            requests:
-              storage: 2Gi
-    # ↑ 同样：未装 local-path-provisioner 时注释掉 storage 段，改用 emptyDir
+    # storage 同理不挂 PVC
 
 # -----------------------------------------------------------------------------
 # Grafana：唯一对外暴露的 Web 界面（NodePort 30300）
+# ⚠️ 一定要在阿里云安全组放行 30300，否则公网访问会失败
+#    （这个坑我们在 Traefik 的 30800 上踩过一次）
 # -----------------------------------------------------------------------------
 grafana:
   enabled: true
-  adminPassword: "admin123"     # 演示环境；生产应走 Secret 引用
+
+  image:
+    registry: docker.m.daocloud.io          # grafana/grafana 来自 docker.io
+
+  sidecar:
+    image:
+      registry: quay.m.daocloud.io          # kiwigrid/k8s-sidecar 来自 quay.io
+    dashboards:
+      enabled: true
+      searchNamespace: ALL                  # 注意是单数 searchNamespace
+
+  # 90.x 用 Secret 提供管理员密码（adminPassword 已从 values 移除）
+  admin:
+    existingSecret: grafana-admin
+
   service:
     type: NodePort
     nodePort: 30300
+
+  # 不持久化：看板通过 sidecar/ConfigMap 提供，本来就不会丢；
+  # 手动在 UI 里改的东西重启会丢 —— 这是明确取舍（要持久化先装 StorageClass）
+  persistence:
+    enabled: false
+  initChownData:
+    enabled: false
+  testFramework:
+    enabled: false
+
   resources:
     requests:
       cpu: 100m
@@ -106,24 +146,14 @@ grafana:
     limits:
       cpu: 500m
       memory: 512Mi
-  persistence:
-    enabled: true
-    storageClassName: local-path
-    size: 2Gi
-  # ↑ 未装 local-path-provisioner 时改为 enabled: false
 
-  # ---- 看板自动加载：把 Dashboard JSON 放进 ConfigMap，Grafana 自动装载 ----
-  sidecar:
-    dashboards:
-      enabled: true
-      searchNamespaces:
-        - monitoring
-        - boutique
-      label: grafana_dashboard
-    datasources:
-      enabled: true
+  grafana.ini:
+    analytics:
+      reporting_enabled: false
+    log:
+      level: warn
 
-  # ---- 预置 Loki 数据源：省去手工点界面，也让配置可版本化 ----
+  # 预置 Loki 数据源：省去手工点界面，也让配置可版本化
   additionalDataSources:
     - name: Loki
       type: loki
@@ -132,27 +162,15 @@ grafana:
       jsonData:
         maxLines: 1000
         timeout: 60
-      isDefault: false
-
-  # 只保留必要的 Grafana 插件与配置，减少启动时间
-  grafana.ini:
-    server:
-      root_url: http://localhost:30300
-    analytics:
-      reporting_enabled: false
-    log:
-      level: warn
 
 # -----------------------------------------------------------------------------
 # 自建 kubeadm 集群的关键取舍
 #
 # kube-scheduler / kube-controller-manager / etcd 的 metrics 默认只监听
-# 127.0.0.1:10257 / 10259 / 2379，Prometheus 从 Pod IP 抓取会失败，
-# Targets 页面显示一片 DOWN，会掩盖真正需要关注的目标。
-# 两种处理方式，本文件选第二种：
-#   方案 A：改 /etc/kubernetes/manifests/*.yaml 的 --bind-address=0.0.0.0（暴露控制面指标，
-#          需自行承担安全面扩大，生产不推荐裸奔）
-#   方案 B：关闭这三个 ServiceMonitor，专注节点层 + 容器层 + 入口层指标（本文件采用）
+# 127.0.0.1，Prometheus 从 Pod IP 抓取必然失败，Targets 页面会显示一片 DOWN，
+# 反而掩盖真正需要关注的目标。这里关闭这三个 ServiceMonitor，
+# 专注节点层 + 容器层 + 入口层指标。
+# （要抓取需改 /etc/kubernetes/manifests/*.yaml 的 --bind-address=0.0.0.0）
 # -----------------------------------------------------------------------------
 kubeScheduler:
   enabled: false
@@ -161,12 +179,14 @@ kubeControllerManager:
 kubeEtcd:
   enabled: false
 kubeProxy:
-  enabled: true          # kube-proxy 的 metrics 端口 10249 默认可从 Pod IP 访问，保留
+  enabled: true
 
-# node-exporter 用 hostNetwork 采集宿主机指标，DaemonSet 需覆盖全部节点
 nodeExporter:
   enabled: true
+
 prometheus-node-exporter:
+  image:
+    registry: quay.m.daocloud.io
   hostNetwork: true
   tolerations:
     - operator: Exists
@@ -179,6 +199,8 @@ prometheus-node-exporter:
       memory: 128Mi
 
 kube-state-metrics:
+  image:
+    registry: k8s.m.daocloud.io            # 这个在 registry.k8s.io
   resources:
     requests:
       cpu: 50m
@@ -188,6 +210,17 @@ kube-state-metrics:
       memory: 256Mi
 
 prometheusOperator:
+  image:
+    registry: quay.m.daocloud.io
+  # operator 用这个作为「创建 Thanos sidecar 时的默认镜像」。
+  # 我们没启用 thanos sidecar（prometheusSpec.thanos 为空），它不会被真正拉取，
+  # 但为了不在渲染结果里留下指向 quay.io 的引用，仍显式换源。
+  thanosImage:
+    registry: quay.m.daocloud.io
+    repository: thanos/thanos
+  prometheusConfigReloader:
+    image:
+      registry: quay.m.daocloud.io
   resources:
     requests:
       cpu: 50m
@@ -195,23 +228,29 @@ prometheusOperator:
     limits:
       cpu: 200m
       memory: 256Mi
-  # 关闭不需要的 admission webhook（自建集群下证书轮换常出问题，非生产可省）
+  # 关闭 admission webhook：它会额外拉 ghcr.io 的 certgen 镜像，
+  # 且自建集群下证书轮换常出问题，演示环境不需要
   admissionWebhooks:
     enabled: false
   tls:
     enabled: false
 
+# 用不到的组件显式关闭（少拉镜像、少占资源）
+thanosRuler:
+  enabled: false
+windowsMonitoring:
+  enabled: false
+
 # -----------------------------------------------------------------------------
-# 默认规则集：chart 自带 100+ 条 K8s 官方告警规则，是很好的学习材料，
-# 但 InfoInhibitor / Watchdog 这类规则在演示环境纯属噪音，直接关掉。
-# 其余保留——面试时可答「我用的是社区经过生产验证的规则集，不是自己拍脑袋写的阈值」。
+# 默认规则集：chart 自带 100+ 条 K8s 官方告警规则，是很好的学习材料。
+# 但 InfoInhibitor / Watchdog 这类在小集群里纯属噪音，关掉。
+# 其余保留 —— 面试可答「用的是社区经过生产验证的规则集，不是自己拍脑袋写的阈值」。
 # -----------------------------------------------------------------------------
 defaultRules:
   create: true
   rules:
     infoInhibitor: false
     watchdog: false
-    # 以下规则在小集群里极易误报，按需关闭
     KubeMemoryOvercommit: false
     KubeCPUOvercommit: false
     CPUThrottlingHigh: false
