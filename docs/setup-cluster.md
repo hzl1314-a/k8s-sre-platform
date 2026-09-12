@@ -353,7 +353,44 @@ server = "https://ghcr.io"
 EOF
 ```
 
-**⑤ 重启并验证**
+**⑤ 关键修改三：sandbox（pause）镜像必须换源**
+
+```bash
+# containerd 2.x 的字段（在 [plugins.'io.containerd.cri.v1.images'.pinned_images] 下）
+sudo sed -i -E "s|^([[:space:]]*sandbox[[:space:]]*=[[:space:]]*).*|\1'registry.cn-hangzhou.aliyuncs.com/google_containers/pause:3.10'|" /etc/containerd/config.toml
+
+# 若是 containerd 1.x（字段名是 sandbox_image），用这条
+# sudo sed -i -E "s|^([[:space:]]*sandbox_image[[:space:]]*=[[:space:]]*).*|\1\"registry.cn-hangzhou.aliyuncs.com/google_containers/pause:3.10\"|" /etc/containerd/config.toml
+
+grep -n -i "pause" /etc/containerd/config.toml     # 验收：显示指向阿里云的 pause:3.10
+```
+
+> ⚠️ **漏了这一步，`kubeadm init` 必然失败，而且报错极具迷惑性**
+>
+> kubelet 启动**任何** Pod（包括 apiserver、etcd 这类静态 Pod）之前，
+> 都要先让 containerd 拉 sandbox 镜像来创建 pause 容器。
+> containerd 2.x 默认写的是 `registry.k8s.io/pause:3.10.1`，大陆拉不到，于是：
+>
+> ```
+> [kubelet-check] The kubelet is healthy after 1.5s     ← kubelet 是好的
+> [api-check] The API server is not healthy after 4m0s  ← 但 apiserver 永远起不来
+> ```
+>
+> containerd 日志里能看到真相——四个静态 Pod **全部**卡在同一处：
+>
+> ```
+> RunPodSandbox for name:"kube-apiserver-k8s-cp" failed
+>   failed to get sandbox image "registry.k8s.io/pause:3.10.1": ... i/o timeout
+> ```
+>
+> **关键认知**：`kubeadm --image-repository` **管不到这里**。
+> 它只影响 kubeadm 预拉的控制面镜像；而 sandbox 镜像是 containerd 自己按配置去拉的，
+> 两条路径完全独立。这也是为什么你预拉了 8 个镜像却依然卡住。
+>
+> `pause` tag 用 `3.10` 而不是 `3.10.1`：与 kubeadm 1.31 预拉的版本一致，
+> 而且已经实测可从阿里云拉取（不需要额外再拉一个 tag）。
+
+**⑥ 重启并验证**
 
 ```bash
 sudo systemctl restart containerd
@@ -361,7 +398,7 @@ sudo systemctl enable containerd
 systemctl status containerd --no-pager | head -5      # 验收：active (running)
 ```
 
-**⑥ 验证加速真的生效（强烈建议做，别跳过）**
+**⑦ 验证加速真的生效（强烈建议做，别跳过）**
 
 ```bash
 # crictl 是 CRI 的命令行客户端，用它模拟 kubelet 拉镜像
@@ -811,7 +848,8 @@ kubectl get svc -n kube-system kube-dns       # ClusterIP 应为 10.96.0.10
 | 2 | `[注意] cri-tools 安装失败，跳过镜像验证` | `apt-get install -y cri-tools` 报 `E: Unable to locate package cri-tools` | Ubuntu 自带源里**没有** cri-tools 包，它属于 Kubernetes 的 apt 源；而脚本把它放在「配 K8s apt 源」之前执行，顺序错了 | 把 cri-tools 安装与镜像验证整体挪到配好 K8s 源之后的步骤 4/4 |
 | 3 | `crictl pull registry.k8s.io/pause:3.10` 失败：`failed to do request: Head "https://europe-west4-docker.pkg.dev/..." dial tcp ...: i/o timeout` | ① 本机走完整 token 流程实测，DaoCloud 各镜像站**全部 200**；② `curl -I registry.k8s.io` 发现源站是 **307 重定向**到 Google `pkg.dev`（正是报错里的地址）；③ 把 hosts.toml 的 `server` 字段删掉（让镜像站成为唯一端点）后**依然**直接请求源站 | containerd 2.2.1 **没有读取** `/etc/containerd/certs.d` 下的 hosts.toml（`config dump` 显示 CRI 的 config_path 一直是默认值，配置被完全忽略） | 放弃 mirror 机制，全面改用**显式镜像地址**：kubeadm 用 `--image-repository`（实测 8 个镜像全通）、Calico 清单写 `spec.registry`、Boutique 替换镜像前缀 |
 | 4 | `kubeadm init` 报 `error execution phase preflight: [ERROR FileExisting-conntrack]: conntrack not found in system path` | 按提示装 `conntrack` 即可；同时把同类依赖（`socat`/`ethtool`/`ipset`）一次性装齐，避免下一轮又因缺别的二进制中断 | Ubuntu 最小安装镜像不含 kubeadm preflight 需要的这些二进制；初始化脚本早期版本只装了 curl/vim 等基础工具 | `apt-get install -y conntrack socat ipset ethtool nfs-common`（三台都装）；已补进 `00-system-init.sh` 并增加安装后逐项校验 |
-| 5 | | | | |
+| 5 | `kubeadm init` 卡在 `[api-check] The API server is not healthy after 4m0s` → `context deadline exceeded`；但 `[kubelet-check] The kubelet is healthy` **是正常的** | `grep -i pause /etc/containerd/config.toml` 看到 `sandbox = 'registry.k8s.io/pause:3.10.1'`；containerd 日志里 apiserver / controller-manager / scheduler / etcd **四个静态 Pod 全部** `RunPodSandbox failed ... failed to get sandbox image` | containerd 2.x 的 sandbox(pause) 镜像默认指向 `registry.k8s.io`（大陆拉不到）。kubelet 创建**任何** Pod 前都要先拉它建 pause 容器，所以所有 Pod 一起卡死，而 kubelet 自身却 healthy——极具迷惑性。且 `kubeadm --image-repository` **管不到这里**（那是两条独立的镜像路径） | 把 sandbox 改为 `registry.cn-hangzhou.aliyuncs.com/google_containers/pause:3.10` → **重启 containerd** → `kubeadm reset -f` → 重跑 init。已补进 `10-install-runtime.sh` |
+| 6 | | | | |
 
 ### 已知高频坑速查
 

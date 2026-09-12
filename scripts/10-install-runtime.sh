@@ -207,6 +207,33 @@ EOF
 
 ok "certs.d 加速配置已写入 5 个仓库"
 
+# --- 关键点 3：sandbox（pause）镜像也必须换源 ---
+#
+# ⚠️ 这是最容易漏、也最迷惑人的一个坑：
+#   kubelet 启动**任何** Pod（包括 apiserver/etcd 这类静态 Pod）之前，
+#   都要先让 containerd 拉 sandbox 镜像来创建 pause 容器。
+#   containerd 2.x 的默认值是 registry.k8s.io/pause:3.10.1，大陆拉不到，
+#   后果是**所有** Pod 全部卡在 RunPodSandbox，而 kubelet 自身却显示 healthy
+#   （`kubeadm init` 会卡在 "Waiting for a healthy API server" 直到超时）。
+#
+#   **kubeadm 的 --image-repository 管不到这里**——它只管 kubeadm 预拉的控制面镜像，
+#   与 containerd 建 Pod 时用的 sandbox 镜像是两条完全独立的路径。
+#
+#   pause tag 用 3.10：与 kubeadm 1.31 预拉的版本一致，且已实测可从阿里云拉取。
+SANDBOX_IMAGE="registry.cn-hangzhou.aliyuncs.com/google_containers/pause:3.10"
+
+if grep -qE "^[[:space:]]*sandbox[[:space:]]*=" /etc/containerd/config.toml; then
+  # containerd 2.x：[plugins.'io.containerd.cri.v1.images'.pinned_images] sandbox = '...'
+  sed -i -E "s|^([[:space:]]*sandbox[[:space:]]*=[[:space:]]*).*|\1'${SANDBOX_IMAGE}'|" /etc/containerd/config.toml
+  ok "sandbox 镜像已设为 ${SANDBOX_IMAGE}"
+elif grep -qE "^[[:space:]]*sandbox_image[[:space:]]*=" /etc/containerd/config.toml; then
+  # containerd 1.x：[plugins."io.containerd.grpc.v1.cri"] sandbox_image = "..."
+  sed -i -E "s|^([[:space:]]*sandbox_image[[:space:]]*=[[:space:]]*).*|\1\"${SANDBOX_IMAGE}\"|" /etc/containerd/config.toml
+  ok "sandbox_image 已设为 ${SANDBOX_IMAGE}"
+else
+  warn "未在 config.toml 中找到 sandbox 镜像配置项，请人工检查（否则 Pod 会全部卡在 RunPodSandbox）"
+fi
+
 systemctl restart containerd
 systemctl enable containerd >/dev/null 2>&1
 
@@ -335,6 +362,7 @@ echo " 4) containerd   : $(systemctl is-active containerd)  (${CONTAINERD_VER})"
 echo " 5) cgroup 驱动  : $(grep -m1 'SystemdCgroup' /etc/containerd/config.toml | tr -d ' ')"
 echo " 6) 内核模块     : $(lsmod | grep -cE '^overlay|^br_netfilter')/2 个已加载"
 echo " 7) 版本锁定     : $(apt-mark showhold | tr '\n' ' ')"
+echo " 8) sandbox 镜像 : $(grep -m1 -iE '^[[:space:]]*sandbox' /etc/containerd/config.toml | tr -d ' ' | cut -d= -f2-)"
 
 echo "=============================================="
 echo
