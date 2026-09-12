@@ -105,17 +105,27 @@ ingressRoute:
 # Prometheus 指标：S3 可观测性阶段的数据源
 # 业务层的 QPS / 5xx 错误率 / P95 延迟都从这里来
 # （Online Boutique 自身不暴露 Prometheus 指标，只能从入口层观测）
+#
+# ⚠️ serviceMonitor 现在必须关闭！
+#
+# 它渲染的是一个 `monitoring.coreos.com/v1` 的 ServiceMonitor 对象，而这个 CRD
+# 由 kube-prometheus-stack 提供 —— 监控栈要到任务 6 才装。CRD 不存在时
+# helm 会直接报错中断安装：
+#     Error: execution error at (traefik/templates/servicemonitor.yaml:5:10):
+#            ERROR: You have to deploy monitoring.coreos.com/v1 first
+#
+# 所以顺序是：先关掉它把入口跑通（本阶段），等任务 6 装完 kube-prometheus-stack
+# 再执行 `helm upgrade` 打开（升级命令见本文件开头）。
+# Traefik 对外提供流量的能力与 ServiceMonitor 无关，关掉不影响任何验收项。
 # -----------------------------------------------------------------------------
 metrics:
   prometheus:
     service:
       enabled: true
     serviceMonitor:
-      enabled: true
+      enabled: false          # ★ 任务 6 装完 kube-prometheus-stack 后改回 true 并 helm upgrade
       interval: 30s
       additionalLabels:
-        # 兼容 kube-prometheus-stack 的默认选择器（我们已把它设为
-        # serviceMonitorSelectorNilUsesHelmValues: false，这个标签是双保险）
         release: kube-prometheus-stack
 
 # -----------------------------------------------------------------------------
