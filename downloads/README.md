@@ -15,6 +15,21 @@
 | `kubernetes-manifests.yaml` | `GoogleCloudPlatform/microservices-demo/release/kubernetes-manifests.yaml` | v0.10.0 | Online Boutique 全部业务负载（任务 4）。**待改**：镜像前缀需替换 |
 | `metrics-server-components.yaml` | `kubernetes-sigs/metrics-server` release asset | v0.7.2 | 原始版本，**未经修改**（任务 8） |
 | `metrics-server-components-patched.yaml` | 本仓库基于 v0.7.2 生成 | v0.7.2 | 已追加 `--kubelet-insecure-tls`，自建集群直接可用（任务 8） |
+| `helm-v3.16.3-linux-amd64.tar.gz` | Helm 官方 `get.helm.sh` | v3.16.3 | helm 客户端 Linux 版。**ECS 上没装 helm，必须手动装**（任务 5 起要用） |
+| `traefik-41.5.0.tgz` | `traefik.github.io/charts` | chart 41.5.0 / Traefik v3.7.13 | Traefik 入口控制器（任务 5） |
+| `traefik-index.yaml` | 同上 | — | chart 仓库索引，用于查可用版本与 tgz 真实地址 |
+
+> **关于 traefik chart 的版本**：计划文档里写的 `28.0.0` 已过时（2026 年最新是 41.5.0）。
+> chart 从 28 → 41 有**两处破坏性结构变化**，照抄老 values 会被静默忽略：
+>
+> | 配置 | chart 28.x | chart 41.x |
+> |---|---|---|
+> | Service 类型 | `service.type` | **`service.spec.type`** |
+> | 日志 | `logs.general.level` / `logs.access.enabled` | **`log.level` / `accessLog.enabled`** |
+>
+> `manifests/ingress/traefik-values.yaml` 已按 41.5.0 修正。
+> chart 的 tgz 地址是 `https://traefik.github.io/charts/traefik/traefik-<版本>.tgz`
+> （注意中间多一层 `traefik/` 目录，少了会 404）。
 
 ## 为什么 Calico 清单要改镜像地址
 
