@@ -53,28 +53,40 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `08-grafana-dashboard.png` | 自建业务总览看板 | 待采集 |
-| `09-grafana-pod-metrics.png` | 单 Pod CPU/内存曲线 | 待采集 |
-| `10-loki-logs.png` | Explore 中查询 boutique 容器日志 | 待采集 |
+| `09-grafana-datasources.png` | Grafana → Connections → Data sources：**Prometheus / Alertmanager / Loki 三个都在**，Loki 的 `Save & test` 通过 | 待采集 |
+| `10-grafana-dashboard.png` | **自建业务总览看板**（`Dashboards` 搜索 `Boutique`）：QPS / P95 / 5xx / 重启 / CPU / 内存 / 日志 全部出数 | 待采集 |
+| `11-grafana-pod-metrics.png` | 看板下半部分的单 Pod CPU / 内存曲线 | 待采集 |
+| `12-loki-logs.png` | Explore 中数据源选 Loki，查询 `{namespace="boutique"}` 能看到容器日志 | 待采集 |
+
+> **编号说明（2026-09-13 修正）**：本节此前误用了 `08`，与 S2 的 `08-traefik-dashboard.png`
+> 冲突。截图为线性编号，跨阶段不重号，故本阶段顺延为 `09-12`，后续阶段同步顺延。
+>
+> **`10-grafana-dashboard.png` 是任务 6 的核心留证**：它同时证明了
+> 「Prometheus 采到了 Traefik 的指标」+「Loki 收到了 Promtail 推的日志」+「看板是自建的」。
+> 找看板时注意：列表按名称排序，「Online Boutique 业务总览」首字母 O 靠后，
+> 用顶部搜索框输 `Boutique` 更快。
 
 ### S4 告警（任务 7）
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `11-alert-rule-fired.png` | Prometheus 中告警规则变为 FIRING | 待采集 |
-| `12-alert-email.png` | 邮箱收到的告警邮件 | 待采集 |
-| `13-alert-dingtalk.png` | 钉钉机器人收到的告警 | 待采集 |
-| `14-alert-recovered.png` | 恢复通知 | 待采集 |
+| `13-alert-rule-fired.png` | Prometheus 中告警规则变为 FIRING | 待采集 |
+| `14-alert-email.png` | 邮箱收到的告警邮件 | 待采集 |
+| `15-alert-dingtalk.png` | 钉钉机器人收到的告警 | 待采集 |
+| `16-alert-recovered.png` | 恢复通知 | 待采集 |
 
 ### S5 压测与 HPA（任务 8）
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `15-hpa-scale-up.png` | `kubectl get hpa -w` 扩容过程 | 待采集 |
-| `16-hey-result.png` | hey 压测结果（QPS / 延迟分布） | 待采集 |
-| `17-grafana-hpa-curve.png` | 压测期间 QPS 与副本数曲线 | 待采集 |
+| `17-hpa-scale-up.png` | `kubectl get hpa -w` 扩容过程 | 待采集 |
+| `18-hey-result.png` | hey 压测结果（QPS / 延迟分布） | 待采集 |
+| `19-grafana-hpa-curve.png` | 压测期间 QPS 与副本数曲线 | 待采集 |
 
 ### S6 故障演练（任务 9）
+
+> 本节用 `chaos-` 前缀而非数字编号——演练截图是成组的、顺序性强，
+> 独立前缀比继续顺延数字更清晰，也避免后续插入时再动一遍编号。
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
