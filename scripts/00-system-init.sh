@@ -122,8 +122,27 @@ apt-get update -qq
 apt-get install -y -qq chrony
 systemctl enable --now chrony >/dev/null 2>&1
 
-# 顺带装上后面要用的基础工具，省得来回 apt install
-apt-get install -y -qq curl wget vim net-tools jq bash-completion >/dev/null 2>&1
+# 顺带装上基础工具 + kubeadm preflight 的硬性依赖
+#
+# ⚠️ 其中 conntrack / socat / ethtool 是 kubeadm preflight 会**直接检查**的二进制，
+#    缺任何一个都会导致 `kubeadm init` 在 preflight 阶段中断：
+#      [ERROR FileExisting-conntrack]: conntrack not found in system path
+#    Ubuntu 的最小安装镜像不带这些，必须显式装。
+#    ipset 供 kube-proxy 的 ipset 模式使用，nfs-common 供日后挂 NFS 存储使用。
+apt-get install -y -qq curl wget vim net-tools jq bash-completion \
+    conntrack socat ipset ethtool nfs-common >/dev/null 2>&1
+
+# 逐个确认，缺哪个直接报出来（不要等到 kubeadm init 才发现）
+MISSING=()
+for bin in conntrack socat ipset ethtool; do
+  command -v "$bin" >/dev/null 2>&1 || MISSING+=("$bin")
+done
+if [[ ${#MISSING[@]} -eq 0 ]]; then
+  ok "kubeadm preflight 依赖已就绪：conntrack / socat / ipset / ethtool"
+else
+  fail "以下依赖安装失败，kubeadm init 会在 preflight 阶段中断：${MISSING[*]}"
+  fail "请手动安装：apt-get install -y ${MISSING[*]}"
+fi
 
 ok "chrony 已启动并设为开机自启"
 

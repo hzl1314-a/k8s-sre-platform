@@ -153,11 +153,23 @@ timedatectl                    # 验收：System clock synchronized: yes
 > **为什么重要**：K8s 依赖证书做认证，证书有有效期，节点间时间差过大（分钟级）会导致
 > TLS 握手失败、etcd 选举异常。这类问题表现出来就是"莫名其妙的认证错误"，极难排查。
 
-**⑤ （可选但推荐）预装常用工具**
+**⑤ 预装常用工具与 kubeadm 依赖（必做，不是可选）**
 
 ```bash
-sudo apt-get install -y curl wget vim net-tools jq bash-completion
+sudo apt-get install -y curl wget vim net-tools jq bash-completion \
+    conntrack socat ipset ethtool nfs-common
 ```
+
+> ⚠️ **`conntrack`、`socat`、`ethtool` 是 kubeadm preflight 会直接检查的二进制**，
+> Ubuntu 最小安装镜像**不带**。缺任何一个，`kubeadm init` 都会在 preflight 阶段中断：
+>
+> ```
+> [ERROR FileExisting-conntrack]: conntrack not found in system path
+> ```
+>
+> 这类报错本身无害（preflight 中断时集群状态还没被改动，装完重跑即可），
+> 但会白等一轮。**三台都要装**——worker 上跑 kube-proxy 同样依赖 conntrack。
+> `scripts/00-system-init.sh` 已包含这一段并附带安装后校验。
 
 ### 1.4 任务 1 验收
 
@@ -798,7 +810,7 @@ kubectl get svc -n kube-system kube-dns       # ClusterIP 应为 10.96.0.10
 | 1 | `[注意] 未能自动设置 config_path，请手工在 config.toml 的 registry 段下添加` | `containerd --version` → **2.2.1**，与脚本预期的 1.6/1.7 不符；`grep config_path /etc/containerd/config.toml` → 值用的是**单引号** `''` | containerd 2.x 改用 TOML v3 格式：注册表段名变为 `io.containerd.cri.v1.images`，空字符串序列化为单引号，只匹配双引号的正则必然漏判 | 脚本正则改为 `['\"]{2}` 兼容单双引号；对完全没有该字段的 2.x 情况识别为「默认值即 /etc/containerd/certs.d，无需修改」 |
 | 2 | `[注意] cri-tools 安装失败，跳过镜像验证` | `apt-get install -y cri-tools` 报 `E: Unable to locate package cri-tools` | Ubuntu 自带源里**没有** cri-tools 包，它属于 Kubernetes 的 apt 源；而脚本把它放在「配 K8s apt 源」之前执行，顺序错了 | 把 cri-tools 安装与镜像验证整体挪到配好 K8s 源之后的步骤 4/4 |
 | 3 | `crictl pull registry.k8s.io/pause:3.10` 失败：`failed to do request: Head "https://europe-west4-docker.pkg.dev/..." dial tcp ...: i/o timeout` | ① 本机走完整 token 流程实测，DaoCloud 各镜像站**全部 200**；② `curl -I registry.k8s.io` 发现源站是 **307 重定向**到 Google `pkg.dev`（正是报错里的地址）；③ 把 hosts.toml 的 `server` 字段删掉（让镜像站成为唯一端点）后**依然**直接请求源站 | containerd 2.2.1 **没有读取** `/etc/containerd/certs.d` 下的 hosts.toml（`config dump` 显示 CRI 的 config_path 一直是默认值，配置被完全忽略） | 放弃 mirror 机制，全面改用**显式镜像地址**：kubeadm 用 `--image-repository`（实测 8 个镜像全通）、Calico 清单写 `spec.registry`、Boutique 替换镜像前缀 |
-| 4 | | | | |
+| 4 | `kubeadm init` 报 `error execution phase preflight: [ERROR FileExisting-conntrack]: conntrack not found in system path` | 按提示装 `conntrack` 即可；同时把同类依赖（`socat`/`ethtool`/`ipset`）一次性装齐，避免下一轮又因缺别的二进制中断 | Ubuntu 最小安装镜像不含 kubeadm preflight 需要的这些二进制；初始化脚本早期版本只装了 curl/vim 等基础工具 | `apt-get install -y conntrack socat ipset ethtool nfs-common`（三台都装）；已补进 `00-system-init.sh` 并增加安装后逐项校验 |
 | 5 | | | | |
 
 ### 已知高频坑速查
