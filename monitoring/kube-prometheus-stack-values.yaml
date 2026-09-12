@@ -159,9 +159,12 @@ grafana:
       level: warn
 
   # 预置 Loki 数据源：省去手工点界面，也让配置可版本化
+  # uid 必须显式写：不指定时 Grafana 会随机生成一个，
+  # 自建看板 JSON 里就没法稳定引用（看板是以 uid 引用数据源的）
   additionalDataSources:
     - name: Loki
       type: loki
+      uid: loki
       access: proxy
       url: http://loki.monitoring.svc.cluster.local:3100
       jsonData:

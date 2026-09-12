@@ -120,10 +120,20 @@ ingressRoute:
 # -----------------------------------------------------------------------------
 metrics:
   prometheus:
+    # 这两个开关是「业务看板」的数据基础，不能省：
+    #   addServicesLabels  -> traefik_service_requests_total 上才会有 service 标签，
+    #                         才能按服务算 QPS / 5xx 错误率
+    #   addEntryPointsLabels -> 入口层（web / websecure）维度的请求量
+    # Online Boutique 自身不暴露 Prometheus 指标，业务层的 QPS / P95 / 错误率
+    # 只能从入口层观测 —— 这也是这套监控设计里唯一能拿到「业务视角」的位置。
+    addServicesLabels: true
+    addEntryPointsLabels: true
     service:
       enabled: true
     serviceMonitor:
-      enabled: false          # ★ 任务 6 装完 kube-prometheus-stack 后改回 true 并 helm upgrade
+      # ★ 2026-09-13 任务 6 装完 kube-prometheus-stack 后改回 true
+      #   （此前为 false：ServiceMonitor CRD 由 kps 提供，装之前渲染会失败）
+      enabled: true
       interval: 30s
       additionalLabels:
         release: kube-prometheus-stack
