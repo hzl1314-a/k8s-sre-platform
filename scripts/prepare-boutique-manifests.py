@@ -67,21 +67,55 @@ SINGLE_REPLICA = {
     "loadgenerator": "压测工具，多副本会干扰压测基线",
 }
 
-IMAGE_REPLACEMENTS = [
-    ("gcr.io/google-samples/microservices-demo/",
-     "gcr.m.daocloud.io/google-samples/microservices-demo/"),
-    ("redis:alpine",
-     "docker.m.daocloud.io/library/redis:alpine"),
+# 上游 registry → 镜像站地址（路径结构保持不变）
+REGISTRY_MAP = [
+    ("gcr.io/", "gcr.m.daocloud.io/"),
+    ("quay.io/", "quay.m.daocloud.io/"),
+    ("ghcr.io/", "ghcr.m.daocloud.io/"),
+    ("registry.k8s.io/", "k8s.m.daocloud.io/"),
+    ("docker.io/", "docker.m.daocloud.io/"),
 ]
+
+# 已经是这些地址的，不再重复改写
+ALREADY_MIRRORED = (
+    ".m.daocloud.io/",
+    "mirror.aliyuncs.com/",
+    "registry.cn-hangzhou.aliyuncs.com/",
+    "registry.cn-shenzhen.aliyuncs.com/",
+)
 
 
 def fix_image(image):
-    """按需替换镜像地址，返回 (新地址, 是否改动)。"""
+    """把上游镜像地址改写成镜像站地址，返回 (新地址, 是否改动)。
+
+    早期版本只处理了 `containers`，漏了 `initContainers` —— 结果
+    loadgenerator 的 `busybox:latest` 没被替换，Pod 直接卡在 Init:ImagePullBackOff。
+    所以这里改成**通用规则**，覆盖两类镜像引用形式：
+
+      1. 带 registry 前缀：gcr.io/... quay.io/... registry.k8s.io/... docker.io/...
+      2. 不带前缀的 Docker Hub 官方镜像：busybox:latest、redis:alpine、library/nginx:1.2
+         （Docker 的隐含规则是「第一段不含 . 或 : 就视为 Docker Hub 路径」）
+    """
     if not image:
         return image, False
-    for old, new in IMAGE_REPLACEMENTS:
-        if image == old or image.startswith(old):
-            return image.replace(old, new, 1), True
+
+    if any(h in image for h in ALREADY_MIRRORED):
+        return image, False
+
+    for src, dst in REGISTRY_MAP:
+        if image.startswith(src):
+            return dst + image[len(src):], True
+
+    parts = image.split("/")
+    if len(parts) == 1:
+        # busybox:latest → docker.m.daocloud.io/library/busybox:latest
+        return "docker.m.daocloud.io/library/" + image, True
+
+    head = parts[0]
+    if "." not in head and ":" not in head:
+        # library/redis:alpine → docker.m.daocloud.io/library/redis:alpine
+        return "docker.m.daocloud.io/" + image, True
+
     return image, False
 
 
