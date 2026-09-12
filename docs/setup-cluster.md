@@ -652,7 +652,42 @@ kubectl get nodes         # 验收：k8s-cp 变成 Ready
 > 通常是内网端口没通。`kubectl logs -n calico-system <calico-node-pod>` 里
 > 会看到 BGP 连接失败（179 端口）。回去检查安全组的内网全通规则。
 
-**④ 消除控制面污点（不用，但要知道）**
+**④ 必做：验证跨节点 Pod 连通性（别等部署业务才发现）**
+
+Calico 装完、节点转 Ready 之后，**先花 30 秒验证跨节点通信**，再往上堆业务。
+这一步能提前拦住本项目踩过的最大一个坑。
+
+```bash
+# 最简验收：DNS 能解析，就说明「Pod → Service ClusterIP」这条转发链路是通的
+kubectl run nettest --rm -it --restart=Never -n default \
+  --image=docker.m.daocloud.io/library/busybox:latest \
+  -- sh -c 'nslookup kubernetes.default && echo "== DNS 正常 =="'
+```
+
+期望输出里能看到 `kubernetes.default.svc.cluster.local` 及其 ClusterIP。
+
+> ⚠️ **若报 `connection timed out; no servers could be reached`**：
+> 这不是 DNS 记录问题，而是 **Pod 到 Service ClusterIP 的转发根本没通**。
+> 按下面的方法定位：
+>
+> ```bash
+> # 找出两个在不同节点上的 Pod IP
+> kubectl get pods -A -o wide
+>
+> # 从集群内部分别测这两个 IP
+> kubectl run nettest --rm -it --restart=Never -n default \
+>   --image=docker.m.daocloud.io/library/busybox:latest \
+>   -- sh -c 'nc -z -w 3 <PodA_IP> <port> && echo A通 || echo A不通; \
+>              nc -z -w 3 <PodB_IP> <port> && echo B通 || echo B不通'
+> ```
+>
+> **诊断口诀**：同节点通 + 跨节点不通 = 节点间路由缺失。
+> 典型根因是 Calico 用了 `VXLANCrossSubnet`——节点同子网时它走 BGP 直路由，
+> 而**云厂商 VPC 不转发 BGP 报文**。改成 `encapsulation: VXLAN`（强制全封装）即可，
+> 本仓库的 `downloads/calico-custom-resources.yaml` 已经是改好的版本
+> （详见踩坑记录第 6 条）。
+
+**⑤ 消除控制面污点（不用，但要知道）**
 
 ```bash
 # 看看控制面上有什么污点
@@ -849,7 +884,8 @@ kubectl get svc -n kube-system kube-dns       # ClusterIP 应为 10.96.0.10
 | 3 | `crictl pull registry.k8s.io/pause:3.10` 失败：`failed to do request: Head "https://europe-west4-docker.pkg.dev/..." dial tcp ...: i/o timeout` | ① 本机走完整 token 流程实测，DaoCloud 各镜像站**全部 200**；② `curl -I registry.k8s.io` 发现源站是 **307 重定向**到 Google `pkg.dev`（正是报错里的地址）；③ 把 hosts.toml 的 `server` 字段删掉（让镜像站成为唯一端点）后**依然**直接请求源站 | containerd 2.2.1 **没有读取** `/etc/containerd/certs.d` 下的 hosts.toml（`config dump` 显示 CRI 的 config_path 一直是默认值，配置被完全忽略） | 放弃 mirror 机制，全面改用**显式镜像地址**：kubeadm 用 `--image-repository`（实测 8 个镜像全通）、Calico 清单写 `spec.registry`、Boutique 替换镜像前缀 |
 | 4 | `kubeadm init` 报 `error execution phase preflight: [ERROR FileExisting-conntrack]: conntrack not found in system path` | 按提示装 `conntrack` 即可；同时把同类依赖（`socat`/`ethtool`/`ipset`）一次性装齐，避免下一轮又因缺别的二进制中断 | Ubuntu 最小安装镜像不含 kubeadm preflight 需要的这些二进制；初始化脚本早期版本只装了 curl/vim 等基础工具 | `apt-get install -y conntrack socat ipset ethtool nfs-common`（三台都装）；已补进 `00-system-init.sh` 并增加安装后逐项校验 |
 | 5 | `kubeadm init` 卡在 `[api-check] The API server is not healthy after 4m0s` → `context deadline exceeded`；但 `[kubelet-check] The kubelet is healthy` **是正常的** | `grep -i pause /etc/containerd/config.toml` 看到 `sandbox = 'registry.k8s.io/pause:3.10.1'`；containerd 日志里 apiserver / controller-manager / scheduler / etcd **四个静态 Pod 全部** `RunPodSandbox failed ... failed to get sandbox image` | containerd 2.x 的 sandbox(pause) 镜像默认指向 `registry.k8s.io`（大陆拉不到）。kubelet 创建**任何** Pod 前都要先拉它建 pause 容器，所以所有 Pod 一起卡死，而 kubelet 自身却 healthy——极具迷惑性。且 `kubeadm --image-repository` **管不到这里**（那是两条独立的镜像路径） | 把 sandbox 改为 `registry.cn-hangzhou.aliyuncs.com/google_containers/pause:3.10` → **重启 containerd** → `kubeadm reset -f` → 重跑 init。已补进 `10-install-runtime.sh` |
-| 6 | | | | |
+| 6 | Pod 全部 Running 但服务互相调不通；`nslookup frontend` 报 `connection timed out; no servers could be reached`；loadgenerator 卡在 init 容器反复超时 | ① 分层测试：**同节点 Pod 互通、跨节点 Pod 不通**、Service ClusterIP 不通；② kube-proxy 日志完全正常（`Using iptables Proxier`、caches synced）；③ calico-node 的 felix 正常轮询无报错 | Calico 的 `encapsulation: VXLANCrossSubnet` 在「节点同子网」时选择**不封装 + BGP 直路由**，而**阿里云 VPC 不转发 BGP 报文**，BGP 会话建不起来 → 节点间没有任何对端 Pod 路由 | 改 `encapsulation: VXLAN`（强制全封装 UDP 4789，绕开 BGP）→ `kubectl apply -f calico-custom-resources.yaml`。这是**云环境部署 Calico 的标准做法** |
+| 7 | | | | |
 
 ### 已知高频坑速查
 
