@@ -501,32 +501,65 @@ kubectl get nodes          # 验收：能看到 k8s-cp，状态 NotReady（正�
 
 ### 3.2 安装 Calico
 
-**① 本机（Windows，走代理）下载清单**
+> ⚠️ **先看这条实测结论（推翻了本手册早期版本的判断）**
+>
+> 原计划是「containerd 配好 certs.d 镜像加速后，直接 apply 官方清单即可，不用改 YAML」。
+> **实测证明这条路在本环境走不通**：containerd 2.2.1 完全没有读取 `/etc/containerd/certs.d`
+> 下的 hosts.toml，即使删掉 `server` 字段（让镜像站成为唯一端点）也依然直接去请求源站。
+> 证据：`crictl pull registry.k8s.io/pause:3.10` 的报错始终指向
+> `europe-west4-docker.pkg.dev`（源站 307 跳转后的 Google 地址）。
+>
+> **但镜像站本身完全正常**（走完整 token 流程实测，全部 200）：
+>
+> | 目标 | 结果 |
+> |---|---|
+> | `k8s.m.daocloud.io/pause:3.10` | 200（token 服务 `m.daocloud.io` 在境内） |
+> | `quay.m.daocloud.io/calico/node:v3.28.0` | 200 |
+> | `quay.m.daocloud.io/tigera/operator:v1.34.0` | 200 |
+> | `gcr.m.daocloud.io/.../frontend:v0.10.0` | 200 |
+>
+> 而且 `crictl pull k8s.m.daocloud.io/pause:3.10`（**直接用镜像站地址**）**成功**。
+>
+> **结论：放弃依赖 containerd 的 mirror 机制，所有镜像一律走「显式镜像地址」方案。**
+> 这反而更可控——地址写死在清单里，行为可预测，也和项目原计划（ACR 中转）的思路一致。
+>
+> 落到各组件：
+>
+> | 组件 | 方案 |
+> |---|---|
+> | kubeadm 控制面镜像 | `--image-repository registry.cn-hangzhou.aliyuncs.com/google_containers`（实测 8 个镜像全部可拉） |
+> | Calico | 清单里显式写 `registry: quay.m.daocloud.io` |
+> | Online Boutique | 镜像地址替换为 `gcr.m.daocloud.io/...` |
+> | Helm charts | values 中逐个指定 `image.repository`（任务 5、6 时处理） |
 
-在**你自己的电脑**上打开 PowerShell 或 Git Bash：
+**① 取清单（本机已有改好的版本，直接用）**
+
+`downloads/` 目录里已经准备好了两份**改过镜像地址**的清单：
+
+| 文件 | 改动 |
+|---|---|
+| `downloads/tigera-operator.yaml` | operator 镜像 → `quay.m.daocloud.io/tigera/operator:v1.34.0` |
+| `downloads/calico-custom-resources.yaml` | 新增 `spec.registry: quay.m.daocloud.io` |
 
 ```bash
-# PowerShell 里如果 curl 是别名，用 curl.exe；Git Bash 直接用 curl 即可
-curl -L -o calico-operator.yaml \
-  https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
-curl -L -o calico-custom-resources.yaml \
-  https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/custom-resources.yaml
-
-# 检查文件大小，两个都应该 > 1KB（几十字节说明下载到的是 404 页面）
-ls -lh calico-*.yaml
-
-# 上传到控制面
-scp calico-operator.yaml calico-custom-resources.yaml root@<k8s-cp公网IP>:~/
+# 本机执行：上传到控制面
+cd /e/yes/k8s-sre-platform
+scp downloads/tigera-operator.yaml downloads/calico-custom-resources.yaml root@<k8s-cp公网IP>:~/
 ```
 
-> **坑位**：`raw.githubusercontent.com` 在大陆时通时不通。如果下载失败，
-> 用本机代理重试（`curl -x http://127.0.0.1:7897 -L -o ...`），
-> 或直接把仓库克隆下来（calico 仓库的 manifests 目录）。
+> 如果要重新下载上游原始清单，命令是（注意文件名是 `tigera-operator.yaml`，不是 `calico-operator.yaml`）：
+> ```bash
+> curl -L -o tigera-operator.yaml \
+>   https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
+> curl -L -o calico-custom-resources.yaml \
+>   https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/custom-resources.yaml
+> ```
+> 下完记得按上表改镜像地址，否则 Calico 会卡在 `ImagePullBackOff`。
 
 **② 在 k8s-cp 上安装**
 
 ```bash
-kubectl create -f calico-operator.yaml
+kubectl create -f tigera-operator.yaml
 # 等 operator 就绪（约 30-60 秒）
 kubectl get pods -n tigera-operator -w
 # 看到 tigera-operator 变成 Running 后，Ctrl+C 退出
@@ -742,7 +775,7 @@ kubectl get svc -n kube-system kube-dns       # ClusterIP 应为 10.96.0.10
 |---|---|---|---|---|
 | 1 | `[注意] 未能自动设置 config_path，请手工在 config.toml 的 registry 段下添加` | `containerd --version` → **2.2.1**，与脚本预期的 1.6/1.7 不符；`grep config_path /etc/containerd/config.toml` → 值用的是**单引号** `''` | containerd 2.x 改用 TOML v3 格式：注册表段名变为 `io.containerd.cri.v1.images`，空字符串序列化为单引号，只匹配双引号的正则必然漏判 | 脚本正则改为 `['\"]{2}` 兼容单双引号；对完全没有该字段的 2.x 情况识别为「默认值即 /etc/containerd/certs.d，无需修改」 |
 | 2 | `[注意] cri-tools 安装失败，跳过镜像验证` | `apt-get install -y cri-tools` 报 `E: Unable to locate package cri-tools` | Ubuntu 自带源里**没有** cri-tools 包，它属于 Kubernetes 的 apt 源；而脚本把它放在「配 K8s apt 源」之前执行，顺序错了 | 把 cri-tools 安装与镜像验证整体挪到配好 K8s 源之后的步骤 4/4 |
-| 3 | | | | |
+| 3 | `crictl pull registry.k8s.io/pause:3.10` 失败：`failed to do request: Head "https://europe-west4-docker.pkg.dev/..." dial tcp ...: i/o timeout` | ① 本机走完整 token 流程实测，DaoCloud 各镜像站**全部 200**；② `curl -I registry.k8s.io` 发现源站是 **307 重定向**到 Google `pkg.dev`（正是报错里的地址）；③ 把 hosts.toml 的 `server` 字段删掉（让镜像站成为唯一端点）后**依然**直接请求源站 | containerd 2.2.1 **没有读取** `/etc/containerd/certs.d` 下的 hosts.toml（`config dump` 显示 CRI 的 config_path 一直是默认值，配置被完全忽略） | 放弃 mirror 机制，全面改用**显式镜像地址**：kubeadm 用 `--image-repository`（实测 8 个镜像全通）、Calico 清单写 `spec.registry`、Boutique 替换镜像前缀 |
 | 4 | | | | |
 | 5 | | | | |
 

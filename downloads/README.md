@@ -9,11 +9,45 @@
 
 | 文件 | 来源 | 版本 | 用途 |
 |---|---|---|---|
-| `tigera-operator.yaml` | `projectcalico/calico/manifests/tigera-operator.yaml` | v3.28.0 | Calico Operator 与 CRD（任务 3.2） |
-| `calico-custom-resources.yaml` | `projectcalico/calico/manifests/custom-resources.yaml` | v3.28.0 | Calico Installation 配置（任务 3.2） |
-| `kubernetes-manifests.yaml` | `GoogleCloudPlatform/microservices-demo/release/kubernetes-manifests.yaml` | v0.10.0 | Online Boutique 全部业务负载（任务 4） |
+| `tigera-operator.yaml` | `projectcalico/calico/manifests/tigera-operator.yaml` | v3.28.0 | Calico Operator 与 CRD（任务 3.2）。**已改镜像** → `quay.m.daocloud.io/tigera/operator:v1.34.0` |
+| `calico-custom-resources.yaml` | `projectcalico/calico/manifests/custom-resources.yaml` | v3.28.0 | Calico Installation 配置（任务 3.2）。**已改镜像** → 新增 `spec.registry: quay.m.daocloud.io` |
+| `tigera-operator.yaml.upstream-backup` | 上游原始文件 | v3.28.0 | 改动前的备份，便于回溯 |
+| `kubernetes-manifests.yaml` | `GoogleCloudPlatform/microservices-demo/release/kubernetes-manifests.yaml` | v0.10.0 | Online Boutique 全部业务负载（任务 4）。**待改**：镜像前缀需替换 |
 | `metrics-server-components.yaml` | `kubernetes-sigs/metrics-server` release asset | v0.7.2 | 原始版本，**未经修改**（任务 8） |
 | `metrics-server-components-patched.yaml` | 本仓库基于 v0.7.2 生成 | v0.7.2 | 已追加 `--kubelet-insecure-tls`，自建集群直接可用（任务 8） |
+
+## 为什么 Calico 清单要改镜像地址
+
+大陆 ECS 直连 `quay.io` 不通。原本的计划是「containerd 配 certs.d 镜像加速，YAML 不用动」，
+但**实测证明 containerd 2.2.1 完全忽略了 certs.d 配置**，即使删掉 hosts.toml 的 `server` 字段
+也依然直接请求源站。所以改成显式地址。
+
+已实测确认这些镜像在镜像站都有缓存（走完整 token 流程，全部 200）：
+
+```
+quay.m.daocloud.io/tigera/operator:v1.34.0
+quay.m.daocloud.io/calico/node:v3.28.0
+quay.m.daocloud.io/calico/cni:v3.28.0
+quay.m.daocloud.io/calico/kube-controllers:v3.28.0
+quay.m.daocloud.io/calico/typha:v3.28.0
+quay.m.daocloud.io/calico/csi:v3.28.0
+quay.m.daocloud.io/calico/node-driver-registrar:v3.28.0
+quay.m.daocloud.io/calico/pod2daemon-flexvol:v3.28.0
+```
+
+改动内容（两处）：
+
+```bash
+# tigera-operator.yaml：Operator 自身镜像
+sed -i 's|image: quay.io/tigera/operator:|image: quay.m.daocloud.io/tigera/operator:|' tigera-operator.yaml
+
+# calico-custom-resources.yaml：Installation 的 spec 下新增一行
+#   spec:
+#     registry: quay.m.daocloud.io
+```
+
+> `spec.registry` 是 Calico Operator 的官方配置项，设了之后 Operator 拉取的所有
+> `calico/*` 组件镜像都会自动带上这个前缀，不需要逐个改。
 
 ## 关于 metrics-server 的 patch
 
