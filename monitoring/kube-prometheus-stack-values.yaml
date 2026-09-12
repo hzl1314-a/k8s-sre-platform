@@ -62,7 +62,7 @@ prometheus:
               storage: 10Gi
     # ↑ 若尚未安装 local-path-provisioner，把上面 storageSpec 整段注释掉
 
-    # 允许 Prometheus 抓取其他命名空间的 ServiceMonitor（跨 ns 发现 Traefik 指标）
+    # 额外标签，便于在指标里标识 Prometheus 自身
     podMetadata:
       labels:
         app: prometheus
