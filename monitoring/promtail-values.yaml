@@ -17,7 +17,7 @@
 # 镜像：chart 默认 docker.io/grafana/promtail，大陆拉不到，必须换镜像站
 # -----------------------------------------------------------------------------
 image:
-  registry: docker.m.daocloud.io
+  registry: docker.1ms.run
   repository: grafana/promtail
   pullPolicy: IfNotPresent
 

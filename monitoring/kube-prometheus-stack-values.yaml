@@ -113,7 +113,12 @@ grafana:
   enabled: true
 
   image:
-    registry: docker.m.daocloud.io          # grafana/grafana 来自 docker.io
+    # grafana/grafana 来自 docker.io。
+    # 2026-09-13 换源：DaoCloud 的 Docker Hub 镜像站（docker.m.daocloud.io）
+    # 拉 grafana 这个大镜像（各层合计约 437MB）实测极慢（10 分钟未完成），
+    # 而同一集群拉 quay.m.daocloud.io 的 109MB Prometheus 只需 21 秒。
+    # 换成毫秒镜像（商业 SLA，多份 2026 实测榜单中速度与大镜像稳定性均优于 DaoCloud）。
+    registry: docker.1ms.run
 
   sidecar:
     image:

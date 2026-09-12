@@ -18,8 +18,9 @@ deploymentMode: SingleBinary
 
 loki:
   # 镜像：chart 默认 docker.io/grafana/loki，必须换镜像站
+  # 2026-09-13 换源：docker.m.daocloud.io 拉大镜像实测极慢，改用毫秒镜像
   image:
-    registry: docker.m.daocloud.io
+    registry: docker.1ms.run
     repository: grafana/loki
 
   # 单机部署不需要多租户
@@ -85,7 +86,7 @@ gateway:
 # （kiwigrid/k8s-sidecar），渲染验证时发现漏网，必须换源。
 sidecar:
   image:
-    registry: docker.m.daocloud.io
+    registry: docker.1ms.run
 
 chunksCache:
   enabled: false
