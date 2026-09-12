@@ -273,31 +273,50 @@ step "步骤 4/4：验证镜像加速"
 apt-get install -y -qq cri-tools >/dev/null 2>&1
 
 PULL_OK=0
+PULL_LOG="/tmp/certs-pull-test.log"
 
 if command -v crictl >/dev/null 2>&1; then
   echo " 测试拉取 registry.k8s.io/pause:3.10（走 CRI 接口，与 kubelet 完全同一条路径）..."
-  if timeout 150 crictl pull registry.k8s.io/pause:3.10 >/dev/null 2>&1; then
-    ok "镜像加速生效：crictl 经 CRI 接口成功拉取"
-    PULL_OK=1
+  # 重试一次：DaoCloud 是懒加载，未缓存的镜像首次请求会入队同步，首拉超时属正常现象
+  for attempt in 1 2; do
+    if timeout 120 crictl pull registry.k8s.io/pause:3.10 >"$PULL_LOG" 2>&1; then
+      ok "镜像加速生效：crictl 经 CRI 接口成功拉取（第 ${attempt} 次尝试）"
+      PULL_OK=1
+      break
+    fi
+    [[ $attempt -eq 1 ]] && warn "第 1 次失败（可能是首次同步未命中缓存），自动重试..."
+  done
+
+  if [[ $PULL_OK -eq 0 ]]; then
+    warn "拉取失败。原始报错（不要吞掉，这是定位的唯一线索）："
+    tail -8 "$PULL_LOG" | sed 's/^/      /'
   fi
+
 elif command -v ctr >/dev/null 2>&1; then
   echo " crictl 不可用，退回用 containerd 自带的 ctr 测试..."
-  if timeout 150 ctr images pull --hosts-dir /etc/containerd/certs.d \
-       registry.k8s.io/pause:3.10 >/dev/null 2>&1; then
+  if timeout 120 ctr images pull --hosts-dir /etc/containerd/certs.d \
+       registry.k8s.io/pause:3.10 >"$PULL_LOG" 2>&1; then
     ok "镜像加速生效：ctr 经 hosts-dir 成功拉取"
     PULL_OK=1
+  else
+    warn "拉取失败。原始报错："
+    tail -8 "$PULL_LOG" | sed 's/^/      /'
   fi
 fi
 
 if [[ $PULL_OK -eq 0 ]]; then
-  warn "镜像拉取失败或超时。按顺序排查："
-  warn "  1) DaoCloud 是懒加载——没人拉过的镜像首次请求会入队同步，重试一次通常就成功："
-  warn "     crictl pull registry.k8s.io/pause:3.10"
-  warn "  2) 检查 hosts.toml 的 server 字段必须是**原始仓库地址**"
-  warn "     （如 https://registry.k8s.io）；写成镜像站地址会导致解析异常"
-  warn "  3) 确认 config_path 指向 /etc/containerd/certs.d（看步骤 2 的输出）"
   echo
-  warn "不阻塞推进：kubeadm 还有 --image-repository 兜底方案，见 docs/setup-cluster.md 3.1"
+  warn "排查顺序（从最可能到最不可能）："
+  warn "  1) 从本机测镜像站可达性："
+  warn "     curl -sS -m 10 -o /dev/null -w '%{http_code} %{time_total}s\\n' https://k8s.m.daocloud.io/v2/"
+  warn "     返回 401 属正常（registry 探测响应）；超时或 DNS 失败 = 这台 ECS 出网有问题"
+  warn "  2) 确认 containerd 真正加载到的路径："
+  warn "     containerd config dump | grep -i config_path"
+  warn "  3) 确认 containerd 日志里没有 registry 相关报错："
+  warn "     journalctl -u containerd -n 30 --no-pager"
+  echo
+  warn "不阻塞推进：控制面镜像有 kubeadm --image-repository 走阿里云的兜底方案，"
+  warn "Calico 也有改 registry 字段的兜底，见 docs/setup-cluster.md 3.2"
 fi
 
 # ---------------------------------------------------------------------------
