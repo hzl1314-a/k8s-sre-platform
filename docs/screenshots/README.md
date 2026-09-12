@@ -14,10 +14,10 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `01-nodes-ready.png` | `kubectl get nodes -o wide`，三节点 Ready | 待采集 |
-| `02-calico-pods.png` | `kubectl get pods -n calico-system` 全 Running | 待采集 |
-| `03-kube-system.png` | `kubectl get pods -n kube-system` 全 Running | 待采集 |
-| `04-remote-kubectl.png` | **本机**执行 `kubectl get nodes`（证明远程管理能力） | 待采集 |
+| `01-nodes-ready.png` | `kubectl get nodes -o wide`，三节点 Ready | ✅ 已采集 |
+| `02-calico-pods.png` | `kubectl get pods -n calico-system` 全 Running | ✅ 已采集 |
+| `03-kube-system.png` | `kubectl get pods -n kube-system` 全 Running | ✅ 已采集 |
+| `04-remote-kubectl.png` | **本机**执行 `kubectl get nodes`（证明远程管理能力） | ⬜ **待采集** |
 
 > **关于 `04-remote-kubectl.png`**：它证明的是「能在本机管理集群」这件事，
 > 用的是 **SSH 隧道**方案（**不是**把 6443 暴露到公网）。做法见 `docs/setup-cluster.md` 3.4 节。
@@ -37,10 +37,10 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `05-boutique-pods.png` | `kubectl get pods -n boutique -o wide`：22 个 Pod 全 Running，**同时证明反亲和生效**（每个服务的两个副本 NODE 列不同） | 待采集 |
-| `06-ingress-nodeport.png` | `kubectl get svc -n traefik` + `kubectl get ingressroute -n boutique`：入口 NodePort 映射与路由规则 | 待采集 |
-| `07-shop-page.png` | 浏览器访问 `http://<ECS公网IP>:30080` 的商店页面 | 待采集 |
-| `08-traefik-dashboard.png` | （可选）`http://<ECS公网IP>:30800/dashboard/` Traefik 面板 | 待采集 |
+| `05-boutique-pods.png` | `kubectl get pods -n boutique -o wide`：22 个 Pod 全 Running，**同时证明反亲和生效**（每个服务的两个副本 NODE 列不同） | ✅ 已采集 |
+| `06-ingress-nodeport.png` | `kubectl get svc -n traefik` + `kubectl get ingressroute -n boutique`：入口 NodePort 映射与路由规则 | ✅ 已采集 |
+| `07-shop-page.png` | 浏览器访问 `http://<ECS公网IP>:30080` 的商店页面 | ✅ 已采集 |
+| `08-traefik-dashboard.png` | `http://<ECS公网IP>:30800/dashboard/` Traefik 面板 | ✅ 已采集 |
 
 > **关于 05 与 06**：一张 `-o wide` 的输出同时能证明两件事——Pod 全部 Running，
 > 以及每个服务的两个副本落在不同节点（看 NODE 列）。所以 05 一张就够，
