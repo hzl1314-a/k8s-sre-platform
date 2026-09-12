@@ -250,6 +250,19 @@ sudo mkdir -p /etc/containerd
 containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
 ```
 
+> ⚠️ **先确认 containerd 版本**：现在的 Ubuntu 22.04 装出来可能是 **containerd 2.x**
+> （实测 2.2.1，不是老教程里的 1.6/1.7）。2.x 的 config.toml 是 v3 格式，有两处与老教程不同：
+>
+> | 差异点 | containerd 1.x | containerd 2.x |
+> |---|---|---|
+> | 注册表配置段名 | `[plugins."io.containerd.grpc.v1.cri".registry]` | `[plugins."io.containerd.cri.v1.images".registry]` |
+> | 空字符串写法 | 双引号 `""` | **单引号** `''` |
+> | certs.d 默认值 | 空（需显式设置） | 已是 `/etc/containerd/certs.d` |
+>
+> 兼容性**不用慌**：官方矩阵里 K8s 1.31 支持 containerd `2.1.0+ / 2.0.0+ / 1.7.20+ / 1.6.34+`，
+> 2.2.1 在支持范围内。但改配置的正则必须同时兼容单双引号，否则会漏判
+> （`scripts/10-install-runtime.sh` 已处理）。
+
 **③ 关键修改一：启用 systemd cgroup 驱动**
 
 ```bash
@@ -727,8 +740,8 @@ kubectl get svc -n kube-system kube-dns       # ClusterIP 应为 10.96.0.10
 
 | # | 现象（原文报错） | 排查过程 | 根因 | 解决 |
 |---|---|---|---|---|
-| 1 | | | | |
-| 2 | | | | |
+| 1 | `[注意] 未能自动设置 config_path，请手工在 config.toml 的 registry 段下添加` | `containerd --version` → **2.2.1**，与脚本预期的 1.6/1.7 不符；`grep config_path /etc/containerd/config.toml` → 值用的是**单引号** `''` | containerd 2.x 改用 TOML v3 格式：注册表段名变为 `io.containerd.cri.v1.images`，空字符串序列化为单引号，只匹配双引号的正则必然漏判 | 脚本正则改为 `['\"]{2}` 兼容单双引号；对完全没有该字段的 2.x 情况识别为「默认值即 /etc/containerd/certs.d，无需修改」 |
+| 2 | `[注意] cri-tools 安装失败，跳过镜像验证` | `apt-get install -y cri-tools` 报 `E: Unable to locate package cri-tools` | Ubuntu 自带源里**没有** cri-tools 包，它属于 Kubernetes 的 apt 源；而脚本把它放在「配 K8s apt 源」之前执行，顺序错了 | 把 cri-tools 安装与镜像验证整体挪到配好 K8s 源之后的步骤 4/4 |
 | 3 | | | | |
 | 4 | | | | |
 | 5 | | | | |

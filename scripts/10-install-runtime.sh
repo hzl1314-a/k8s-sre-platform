@@ -58,7 +58,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 # 1. 内核前置
 # ---------------------------------------------------------------------------
-step "步骤 1/3：内核模块与 sysctl"
+step "步骤 1/4：内核模块与 sysctl"
 
 # overlay：containerd 的存储驱动，镜像分层靠它
 # br_netfilter：让经过网桥的流量也能被 iptables 规则匹配（Service 转发必需）
@@ -93,7 +93,7 @@ echo "       ip_forward              = $(sysctl -n net.ipv4.ip_forward)"
 # ---------------------------------------------------------------------------
 # 2. containerd
 # ---------------------------------------------------------------------------
-step "步骤 2/3：containerd"
+step "步骤 2/4：containerd"
 
 apt-get update -qq
 apt-get install -y -qq containerd curl gnupg >/dev/null 2>&1
@@ -103,7 +103,11 @@ if ! command -v containerd >/dev/null 2>&1; then
   exit 1
 fi
 
-ok "containerd 已安装：$(containerd --version | awk '{print $3}')"
+# containerd 2.x 的 --version 输出里带路径 github.com/containerd/containerd/v2，
+# 所以不能用 awk '{print $3}' 取版本（2.x 会取错），统一用正则抽 x.y.z
+CONTAINERD_VER="$(containerd --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+CONTAINERD_MAJOR="${CONTAINERD_VER%%.*}"
+ok "containerd 已安装：${CONTAINERD_VER}（主版本 ${CONTAINERD_MAJOR}.x）"
 
 mkdir -p /etc/containerd
 containerd config default > /etc/containerd/config.toml
@@ -118,17 +122,39 @@ else
   ok "cgroup 驱动已是 systemd（或格式不同，请人工确认 grep SystemdCgroup /etc/containerd/config.toml）"
 fi
 
-# --- 关键点 2：启用 certs.d 按仓库配置镜像加速 ---
-# 用 certs.d + hosts.toml 而不是旧式 registry.mirrors：
-#   官方推荐、containerd 1.6/1.7 都支持、且不受 config.toml 版本（v2/v3）差异影响
-if grep -q 'config_path = ""' /etc/containerd/config.toml; then
-  sed -i 's|^\(\s*\)config_path = ""|\1config_path = "/etc/containerd/certs.d"|' /etc/containerd/config.toml
-  ok "config_path 已设为 /etc/containerd/certs.d"
-elif grep -q 'config_path = "/etc/containerd/certs.d"' /etc/containerd/config.toml; then
+# --- 关键点 2：确保 certs.d 镜像加速目录被启用 ---
+# 用 certs.d + hosts.toml 而不是旧式 registry.mirrors：官方推荐，且不受 config.toml 版本差异影响
+#
+# ⚠️ 版本差异（踩过的坑）：
+#   containerd 1.x：段名 [plugins."io.containerd.grpc.v1.cri".registry]，默认值 config_path = ""
+#   containerd 2.x：段名 [plugins."io.containerd.cri.v1.images".registry]，默认值用**单引号** config_path = ''
+#                   （v3 格式的 config.toml 用单引号，只匹配双引号会漏判）
+#   另外 containerd 2.x 在完全没有设置任何 registry 选项时，config_path 的默认值
+#   本身就是 "/etc/containerd/certs.d:/etc/docker/certs.d"
+#
+# 所以这里的策略是：能显式设置就设置（消除歧义、便于面试讲解），
+# 设置不到且是 2.x 则明确说明默认值已生效，不必强行插入。
+CERTS_PATH_READY=0
+
+if grep -qE "config_path[[:space:]]*=[[:space:]]*['\"]/etc/containerd/certs\.d['\"]" /etc/containerd/config.toml; then
   ok "config_path 已是 /etc/containerd/certs.d"
-else
-  warn "未能自动设置 config_path，请手工在 config.toml 的 registry 段下添加："
-  warn '  config_path = "/etc/containerd/certs.d"'
+  CERTS_PATH_READY=1
+elif grep -qE "config_path[[:space:]]*=[[:space:]]*['\"]{2}[[:space:]]*$" /etc/containerd/config.toml; then
+  # 匹配空值：'' 或 ""（兼容 containerd 1.x 与 2.x 两种写法）
+  sed -i -E "s|^([[:space:]]*)config_path[[:space:]]*=[[:space:]]*['\"]{2}[[:space:]]*$|\1config_path = \"/etc/containerd/certs.d\"|" /etc/containerd/config.toml
+  ok "config_path 已显式设为 /etc/containerd/certs.d"
+  CERTS_PATH_READY=1
+fi
+
+if [[ $CERTS_PATH_READY -eq 0 ]]; then
+  if [[ "${CONTAINERD_MAJOR:-0}" -ge 2 ]]; then
+    ok "containerd 2.x：本版本未设置 config_path 时的默认值即 /etc/containerd/certs.d，加速目录已生效"
+  else
+    warn "未找到 config_path 字段，请人工确认 config.toml 的 registry 段："
+    warn "  containerd 1.x → [plugins.\"io.containerd.grpc.v1.cri\".registry]"
+    warn "  containerd 2.x → [plugins.\"io.containerd.cri.v1.images\".registry]"
+    warn "  在该段下添加：config_path = \"/etc/containerd/certs.d\""
+  fi
 fi
 
 # 写各仓库的加速配置
@@ -191,27 +217,14 @@ else
   exit 1
 fi
 
-# --- 实测加速是否真的生效（跳过这步，后面出问题会很被动）---
-step "步骤 2b：验证镜像加速"
-apt-get install -y -qq cri-tools >/dev/null 2>&1
-
-if command -v crictl >/dev/null 2>&1; then
-  echo " 正在测试拉取 registry.k8s.io/pause:3.10 ..."
-  if crictl pull registry.k8s.io/pause:3.10 >/dev/null 2>&1; then
-    ok "镜像加速生效（registry.k8s.io 已能拉取）"
-  else
-    warn "拉取失败。DaoCloud 是懒加载，缓存未命中时第一次可能超时，建议重试一次："
-    warn "  crictl pull registry.k8s.io/pause:3.10"
-    warn "仍失败则检查 hosts.toml 的 server 字段是否被误改成镜像站地址（应为原始仓库地址）"
-  fi
-else
-  warn "cri-tools 安装失败，跳过镜像验证（不影响后续步骤）"
-fi
+# 注意：镜像加速的实测放在最后的步骤 4/4 —— 因为验证要用到的 cri-tools
+# 在 Ubuntu 自带源里**根本不存在**（apt install cri-tools 必然失败），
+# 必须先配好 Kubernetes 的 apt 源才能装上。这个顺序坑踩过一次。
 
 # ---------------------------------------------------------------------------
 # 3. kubeadm / kubelet / kubectl
 # ---------------------------------------------------------------------------
-step "步骤 3/3：kubeadm / kubelet / kubectl"
+step "步骤 3/4：kubeadm / kubelet / kubectl"
 
 apt-get install -y -qq apt-transport-https ca-certificates >/dev/null 2>&1
 mkdir -p /etc/apt/keyrings
@@ -248,6 +261,46 @@ apt-mark hold kubelet kubeadm kubectl >/dev/null 2>&1
 ok "kubeadm / kubelet / kubectl 已安装并锁版本"
 
 # ---------------------------------------------------------------------------
+# 4. 验证镜像加速
+#
+# 为什么放最后：cri-tools 不在 Ubuntu 自带源里（apt install cri-tools 必然失败），
+# 必须先配好上面那个 Kubernetes 源才能装上。
+# 为什么非验不可：kubeadm init 要拉 8 个控制面镜像，加速没生效就会卡在任务 3，
+# 而且报错指向性很差。这里花 30 秒验证，能省掉后面半小时的排查。
+# ---------------------------------------------------------------------------
+step "步骤 4/4：验证镜像加速"
+
+apt-get install -y -qq cri-tools >/dev/null 2>&1
+
+PULL_OK=0
+
+if command -v crictl >/dev/null 2>&1; then
+  echo " 测试拉取 registry.k8s.io/pause:3.10（走 CRI 接口，与 kubelet 完全同一条路径）..."
+  if timeout 150 crictl pull registry.k8s.io/pause:3.10 >/dev/null 2>&1; then
+    ok "镜像加速生效：crictl 经 CRI 接口成功拉取"
+    PULL_OK=1
+  fi
+elif command -v ctr >/dev/null 2>&1; then
+  echo " crictl 不可用，退回用 containerd 自带的 ctr 测试..."
+  if timeout 150 ctr images pull --hosts-dir /etc/containerd/certs.d \
+       registry.k8s.io/pause:3.10 >/dev/null 2>&1; then
+    ok "镜像加速生效：ctr 经 hosts-dir 成功拉取"
+    PULL_OK=1
+  fi
+fi
+
+if [[ $PULL_OK -eq 0 ]]; then
+  warn "镜像拉取失败或超时。按顺序排查："
+  warn "  1) DaoCloud 是懒加载——没人拉过的镜像首次请求会入队同步，重试一次通常就成功："
+  warn "     crictl pull registry.k8s.io/pause:3.10"
+  warn "  2) 检查 hosts.toml 的 server 字段必须是**原始仓库地址**"
+  warn "     （如 https://registry.k8s.io）；写成镜像站地址会导致解析异常"
+  warn "  3) 确认 config_path 指向 /etc/containerd/certs.d（看步骤 2 的输出）"
+  echo
+  warn "不阻塞推进：kubeadm 还有 --image-repository 兜底方案，见 docs/setup-cluster.md 3.1"
+fi
+
+# ---------------------------------------------------------------------------
 # 验收
 # ---------------------------------------------------------------------------
 echo
@@ -259,7 +312,7 @@ KV="$(kubeadm version -o short 2>/dev/null || echo '获取失败')"
 echo " 1) kubeadm 版本 : ${KV}"
 echo " 2) kubelet 版本 : $(kubelet --version 2>/dev/null | awk '{print $2}')"
 echo " 3) kubectl 版本 : $(kubectl version --client 2>/dev/null | head -1 | grep -oE 'v[0-9.]+' | head -1)"
-echo " 4) containerd   : $(systemctl is-active containerd)"
+echo " 4) containerd   : $(systemctl is-active containerd)  (${CONTAINERD_VER})"
 echo " 5) cgroup 驱动  : $(grep -m1 'SystemdCgroup' /etc/containerd/config.toml | tr -d ' ')"
 echo " 6) 内核模块     : $(lsmod | grep -cE '^overlay|^br_netfilter')/2 个已加载"
 echo " 7) 版本锁定     : $(apt-mark showhold | tr '\n' ' ')"
