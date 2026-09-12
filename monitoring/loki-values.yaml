@@ -42,6 +42,22 @@ loki:
           prefix: loki_index_
           period: 24h
 
+  # ---------------------------------------------------------------------------
+  # 保留策略：Loki 默认「永久保留」，要真正删除必须由 compactor 执行
+  # ---------------------------------------------------------------------------
+  # 三个字段是一个整体，缺一个都不行（Loki 3.x 的硬性要求）：
+  #   retention_enabled            —— 不设 true 时 compactor 只做合并、不删除
+  #   delete_request_store         —— 启用 retention 时**必须**指定，否则启动报错
+  #   limits_config.retention_period —— 实际的保留时长（见下方）
+  # working_directory 不能留默认（默认 /data/retention 会失败），指到我们挂了盘的地方
+  compactor:
+    working_directory: /var/loki/compactor
+    retention_enabled: true
+    delete_request_store: filesystem
+    compaction_interval: 10m
+    retention_delete_delay: 2h
+    retention_delete_worker_count: 150
+
   limits_config:
     # 日志保留 7 天：够覆盖「压测 → 演练 → 写复盘」的全过程
     retention_period: 168h
@@ -59,12 +75,34 @@ singleBinary:
     limits:
       cpu: 500m
       memory: 1Gi
-  # ⚠️ 集群没有默认 StorageClass（自建 kubeadm 集群的通病），
-  #    所以不挂 PVC，用 emptyDir —— 代价是 Loki Pod 重启会丢历史日志。
-  #    日志本身是时效性数据，演示场景可接受。
-  #    若要持久化：先装 local-path-provisioner，再把 enabled 改成 true。
+  # ⚠️ 这里有个必须知道的坑（2026-09-13 实际踩到，Loki 直接 CrashLoopBackOff）：
+  #
+  #   chart 的 statefulset 模板里，/var/loki 的挂载被 persistence 开关包着：
+  #       {{- if .Values.singleBinary.persistence.enabled }}
+  #       - name: storage
+  #         mountPath: /var/loki
+  #       {{- end }}
+  #
+  #   而 Loki 容器是 runAsUser=10001 / runAsNonRoot=true 运行的，
+  #   配置里 path_prefix / chunks_directory 又都指向 /var/loki。
+  #   一旦 persistence 关掉且不手工补挂载，容器就没有可写的 /var/loki，
+  #   启动时 mkdir 被拒 -> Error -> CrashLoopBackOff。
+  #
+  #   我们的集群没有默认 StorageClass（自建 kubeadm 的通病），
+  #   所以 persistence 保持 false，改用下面的 extraVolumes 手工挂 emptyDir。
+  #   代价：Pod 重建会丢历史日志。日志是时效性数据，演示场景可接受。
+  #   若要持久化：先装 local-path-provisioner，再把 persistence.enabled 改 true
+  #   并删掉下面两个 extra*。
   persistence:
     enabled: false
+
+  extraVolumes:
+    - name: storage
+      emptyDir: {}
+
+  extraVolumeMounts:
+    - name: storage
+      mountPath: /var/loki
 
 # ---- SingleBinary 模式下，其余模式的组件必须显式置零 ----
 backend:
