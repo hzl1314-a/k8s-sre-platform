@@ -79,6 +79,25 @@ EOF
 
 ### 1.3 系统初始化（三台都要执行）
 
+> **省力做法（推荐）**：本节 4 个步骤已打包成幂等脚本 `scripts/00-system-init.sh`，三台各跑一次：
+>
+> ```bash
+> # 本机上传（三台都传一份）
+> scp scripts/00-system-init.sh root@<k8s-cp公网IP>:~/
+> scp scripts/00-system-init.sh root@<k8s-w1公网IP>:~/
+> scp scripts/00-system-init.sh root@<k8s-w2公网IP>:~/
+>
+> # 各自执行（只改第一个参数）
+> ssh root@<k8s-cp公网IP> "bash ~/00-system-init.sh k8s-cp <cp内网IP> <w1内网IP> <w2内网IP>"
+> ssh root@<k8s-w1公网IP> "bash ~/00-system-init.sh k8s-w1 <cp内网IP> <w1内网IP> <w2内网IP>"
+> ssh root@<k8s-w2公网IP> "bash ~/00-system-init.sh k8s-w2 <cp内网IP> <w1内网IP> <w2内网IP>"
+> ```
+>
+> 脚本会自动完成下面 4 步并打印验收结果（包括对端节点的 ping 连通性测试）。
+>
+> **但建议第一台手敲一遍**：面试被问「初始化都做了什么」时，手敲过才答得顺。
+> 三台都跑完后回头对一遍脚本里的注释，比只跑脚本收获大得多。
+
 SSH 登录每台机器，逐段执行。
 
 **① 确认主机名**
@@ -161,8 +180,23 @@ timedatectl | grep -E "synchronized|Time zone"
 
 ## 2. containerd 与 kubeadm 安装（三台同样操作）
 
-> 这一节三台机器命令**完全一致**，建议写成一个脚本 scp 上去跑，减少手误。
-> 下面按小节给出，方便你出问题时定位。
+> **省力做法（推荐）**：本节已打包为幂等脚本 `scripts/10-install-runtime.sh`，三台各跑一次：
+>
+> ```bash
+> # 本机上传（三台都传一份）
+> scp scripts/10-install-runtime.sh root@<各台公网IP>:~/
+>
+> # 各自执行（建议带上你的阿里云专属加速地址）
+> ssh root@<k8s-cp公网IP> \
+>   "ALIYUN_MIRROR='https://xxxxxxx.mirror.aliyuncs.com' bash ~/10-install-runtime.sh"
+> # w1 / w2 命令完全相同
+> ```
+>
+> 脚本会自动完成：内核模块与 sysctl → containerd（含 cgroup 驱动修改 + certs.d 加速）
+> → 实测拉镜像验证 → 装 kubeadm/kubelet/kubectl 并锁版本 → 打印 7 项验收结果。
+>
+> 这一节三台命令**完全一致**，手敲容易漏字，所以脚本是首选。
+> 下面按小节给出手工步骤，**用于理解原理和出问题时的定位**。
 
 ### 2.1 内核前置配置
 
