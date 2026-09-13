@@ -219,6 +219,13 @@ spec:
     # 效果就是「匹配到的告警到此为止，不通知任何人」。这是官方支持的丢弃写法，
     # 比用 silence 或 mute_time_intervals 更简单、也不会在 UI 上留下大量静默记录。
     #
+    # 是否可靠（已双重核实，不是猜的）：
+    #   ① chart 自带的默认配置里就有一个同样空的接收器 ——
+    #      `receivers: [{name: 'null'}]`，kube-prometheus 用它把所有元告警丢掉；
+    #   ② Operator 源码 pkg/alertmanager/amcfg.go 的 convertReceiver：
+    #      每类配置都写成 `if l := len(in.XxxConfigs); l > 0 { ... }`，
+    #      全空时直接返回 `&receiver{Name: ...}, nil` —— **不会因为空而报错或被跳过**。
+    #
     # 用它的场景见上面 severity=none 那条路由的注释。
     # -------------------------------------------------------------------------
     - name: discard
