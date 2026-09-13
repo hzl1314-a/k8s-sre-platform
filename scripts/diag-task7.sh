@@ -29,6 +29,26 @@ bad()  { echo "  ✗ $*"; }
 warn() { echo "  ⚠ $*"; }
 sec()  { echo; echo "════ $* ════════════════════════════════════════"; }
 
+# 读取 Alertmanager 的**生效配置**（合并后的最终配置）。
+# ⚠️ `/api/v2/status` **没有** configYAML 字段（实测：写它会静默拿到 null）；
+#    正确路径是 `.config.original`（返回完整原始配置字符串）。
+# 兜底：直接进容器读配置文件，路径从容器自己的 --config.file 参数里取，不写死。
+am_effective_config() {
+  local cfg pod path
+  cfg=$(curl -s -m 10 "http://127.0.0.1:${AM_PORT}/api/v2/status" 2>/dev/null \
+        | jq -r '.config.original // empty' 2>/dev/null)
+  if [[ -n "$cfg" ]]; then printf '%s' "$cfg"; return 0; fi
+
+  pod=$(kubectl -n "$NS_MON" get pods -l app.kubernetes.io/name=alertmanager \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  [[ -z "$pod" ]] && return 1
+  path=$(kubectl -n "$NS_MON" get pod "$pod" \
+         -o jsonpath='{range .spec.containers[*].args[*]}{@}{"\n"}{end}' 2>/dev/null \
+         | sed -n 's/^--config\.file=//p' | head -1)
+  [[ -z "$path" ]] && path=/etc/alertmanager/config/alertmanager.yaml
+  kubectl -n "$NS_MON" exec "$pod" -c alertmanager -- cat "$path" 2>/dev/null
+}
+
 command -v kubectl >/dev/null 2>&1 || { echo "[错误] 缺少 kubectl" >&2; exit 1; }
 command -v jq      >/dev/null 2>&1 || { echo "[错误] 缺少 jq：apt-get install -y jq" >&2; exit 1; }
 
@@ -52,10 +72,12 @@ kubectl -n "$NS_MON" port-forward svc/kube-prometheus-stack-alertmanager "${AM_P
 PF_PIDS+=($!)
 sleep 4
 
-AMCFG=$(curl -s -m 10 "http://127.0.0.1:${AM_PORT}/api/v2/status" 2>/dev/null | jq -r '.configYAML' 2>/dev/null)
+AMCFG=$(am_effective_config 2>/dev/null)
 
-if [[ -z "$AMCFG" || "$AMCFG" == "null" ]]; then
-  bad "取不到 Alertmanager 配置（port-forward 失败或 API 不可达）"
+if [[ -z "$AMCFG" ]]; then
+  bad "取不到 Alertmanager 的生效配置（port-forward 失败，或 API/容器都读不到）"
+  echo "      手工替代方案：kubectl -n $NS_MON exec deploy/kube-prometheus-stack-alertmanager -c alertmanager -- \\"
+  echo "                    cat /etc/alertmanager/config/alertmanager.yaml"
 else
   echo "  ── receivers（看有没有我们项目的） ──"
   printf '%s' "$AMCFG" | grep -E '^- name:|^  - name:|^\s+- name:' | sed 's/^/    /' | head -20
@@ -73,13 +95,18 @@ else
   echo "  ── route 段（截取 60 行） ──"
   printf '%s' "$AMCFG" | sed -n '/^route:/,/^receivers:/p' | head -60 | sed 's/^/    /'; echo
 
-  echo "  ── inhibit_rules 条数（chart 默认有 4 条：critical→warning/info 等） ──"
-  INH=$(printf '%s' "$AMCFG" | grep -c 'source_matchers\|target_matchers')
-  echo "    matchers 行数 = ${INH}"
-  if [[ "${INH:-0}" -lt 8 ]]; then
-    warn "看起来 chart 默认的抑制规则没进来（默认应有 4 条规则、共 8 个 matchers 行）"
+  echo "  ── inhibit_rules（chart 默认 4 条：critical→warning/info、warning→info、InfoInhibitor 相关 2 条） ──"
+  # 每条抑制规则都恰好有一个 target_matchers，用它数「规则条数」最稳。
+  # 注意别写成 `- target_matchers`：只有「没有 source_matchers」的那条规则才带前导 `- `，
+  # 其余规则的 target_matchers 是缩进在 source_matchers 下面的，带前导减号会少数。
+  # 用 grep -o | wc -l 而不是 grep -c：后者只数**行**，配置被压成一行时就会数错。
+  INH=$(printf '%s' "$AMCFG" | grep -o 'target_matchers' | wc -l | tr -d ' ')
+  echo "    抑制规则条数 = ${INH}（chart 默认应为 4）"
+  if [[ "${INH:-0}" -lt 4 ]]; then
+    warn "抑制规则比预期少 → Operator 合并时可能没带上 chart 的默认 inhibit_rules"
+    warn "影响：critical 告警无法抑制同命名空间的 warning，告警风暴时噪声会翻倍"
   else
-    ok "抑制规则看起来保留了"
+    ok "抑制规则已保留"
   fi
   printf '%s' "$AMCFG" | sed -n '/^inhibit_rules:/,/^route:/p' | head -40 | sed 's/^/    /'; echo
 

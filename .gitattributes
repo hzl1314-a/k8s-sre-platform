@@ -4,14 +4,32 @@
 # 如果 Windows 的 core.autocrlf 把脚本转成 CRLF，Linux 上会报
 #   bash: ./mirror-push.sh: /bin/bash^M: bad interpreter: No such file or directory
 # 这类问题极难一眼看穿。这里强制 LF，从源头避免。
+#
+# ⚠️ 2026-09-13 补充（实测踩到，且比上面那种更难认）：
+#   某个工具（python 以文本模式改写文件）把 scripts/diag-task7.sh 写成了 CRLF。
+#   Git Bash 完全容忍 CRLF，本地 `bash -n` 也全部通过，但文件 scp 到 ECS 后 bash
+#   在**解析阶段**就崩了，而且报错长这样：
+#       /root/diag-task7.sh: line 18: $'\r': command not found
+#       : invalid option nameline 19: set: pipefail
+#       line 152: syntax error near unexpected token `$'in\r''
+#   注意它**不是第一行就报错**、错误信息也完全不像行尾符问题，很容易误判成「脚本写坏了」。
+#
+#   **关键认知**：.gitattributes 只在 git add / checkout 时做规范化，
+#   **挡不住别的工具往工作区里写 CRLF**——而 scp 传的正是工作区那份文件。
+#   所以除了这个文件，上传前还要自己做一次自检：
+#       grep -lU $'\r' scripts/*.sh || echo "所有脚本均为 LF ✓"
+#   如果命中了，就地修：sed -i 's/\r$//' scripts/xxx.sh
 
 * text=auto eol=lf
 
 *.sh    text eol=lf
+*.py    text eol=lf
 *.yaml  text eol=lf
 *.yml   text eol=lf
 *.md    text eol=lf
 *.toml  text eol=lf
+*.tpl   text eol=lf
+*.json  text eol=lf
 
 *.png   binary
 *.jpg   binary

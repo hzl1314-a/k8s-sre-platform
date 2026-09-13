@@ -188,6 +188,8 @@ k8s-sre-platform/
 | 7 | **Bash 工具里 coreutils 不在 PATH**：`ls` / `head` / `grep` / `wc` 一律 command not found。命令前加 `export PATH="/usr/bin:/bin:$PATH"` 即可恢复 |
 | 8 | **Git Bash 的 `/tmp` 与 Windows 程序的 `/tmp` 不是同一个目录**：bash 里 `/tmp/x.yaml` 能被 bash 的 `ls` 看到，但 Windows 版 Python 会去找 `E:\tmp\x.yaml` 而报 FileNotFoundError。跨工具传文件请统一用 `E:\...` 绝对路径 |
 | 9 | **自定义资源的字段错误不会报错**，会被 CRD **静默裁剪**。上手写任何 `PrometheusRule` / `AlertmanagerConfig` / `ServiceMonitor` 之前，先用 `scripts/validate-crd-fields.py` 过一遍（本地就能跑，见 `docs/alerting.md` §3 第 3 步） |
+| 10 | **脚本被工具写成 CRLF → Linux 上解析期直接崩**。症状：`line 18: $'\r': command not found`、`: invalid option nameline 19: set: pipefail`、`syntax error near unexpected token \`$'in\r'\``。**不是第一行报错、也完全不像行尾符问题**，极易误判成脚本写坏了。Windows 侧一切正常（Git Bash 容忍 CRLF、`bash -n` 也过） | scp 前自检：`grep -lU $'\r' scripts/*.sh`；命中就 `sed -i 's/\r$//' <文件>`。注意 `.gitattributes` 只在 add/checkout 规范化，**挡不住工具往工作区写 CRLF**，而 scp 传的是工作区文件 |
+| 11 | **读第三方 API 前先核对 OpenAPI**。实例：以为 Alertmanager 的 `/api/v2/status` 有 `configYAML`，实际**没有这个字段**，写它会静默拿到 `null`（不报错），导致验收项连续空转 | 正确路径是 `.config.original`。核对方式：读上游仓库的 `api/v2/openapi.yaml`，别按记忆写字段名 |
 
 ---
 

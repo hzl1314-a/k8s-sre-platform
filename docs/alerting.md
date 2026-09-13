@@ -291,13 +291,35 @@ scp manifests/alerts/dingtalk-webhook.yaml \
     manifests/alerts/boutique-alert-rules.yaml \
     manifests/alerts/alertmanager-config.yaml root@<cp公网IP>:~/task7/
 scp downloads/secrets/dingtalk-config.yml root@<cp公网IP>:~/dingtalk-config.yml
-scp scripts/deploy-task7.sh scripts/alert-drill.sh root@<cp公网IP>:~/
+scp scripts/deploy-task7.sh scripts/alert-drill.sh scripts/diag-task7.sh root@<cp公网IP>:~/
 
 # cp 上：一条命令
 bash ~/deploy-task7.sh
 #   凭证用交互式输入（read -s，不回显、不进 shell 历史）
 #   幂等，可重复执行；已存在的东西不会被重复创建
 ```
+
+> ⚠️ **scp 之前先做一次行尾符自检**（2026-09-13 实测踩过，症状极具误导性）：
+>
+> ```bash
+> grep -lU $'\r' scripts/*.sh \
+>   && echo "↑ 上面这些是 CRLF，先修：sed -i 's/\r$//' <文件>" \
+>   || echo "所有脚本均为 LF ✓"
+> ```
+>
+> 本机是 Windows，某个工具（用 python 以文本模式改写文件）可能把脚本写成 CRLF。
+> Git Bash 完全容忍 CRLF、本地 `bash -n` 也全过，但文件到 Linux 后 bash 在**解析阶段**就崩：
+>
+> ```
+> /root/diag-task7.sh: line 18: $'\r': command not found
+> : invalid option nameline 19: set: pipefail
+> line 152: syntax error near unexpected token `$'in\r''
+> ```
+>
+> **它不是从第一行报错、错误信息也完全不像行尾符问题**，很容易误判成脚本写坏了。
+> 注意 `.gitattributes` 只在 git add/checkout 时规范化，**挡不住别的工具往工作区写 CRLF**
+> ——而 scp 传的正是工作区那份文件，所以这个自检不能省。
+
 
 脚本会打印 `通过 N 项，失败 M 项`。四项验收分别是：
 ① 规则被 Prometheus 加载了 ② Operator 把路由合并进最终配置了
@@ -542,6 +564,8 @@ curl -s -X POST http://127.0.0.1:9093/api/v2/alerts -H 'Content-Type: applicatio
 | 7 | 演练后邮箱里收到一封 `[FIRING:1] InfoInhibitor … severity=none` 的噪声邮件，真正该看的 `DeploymentReplicasUnavailable` 反而不显眼 | ① 查 chart 的 values：`defaultRules.rules` 段里**没有** `infoInhibitor` 键（只有规则文件名键）→ values 里那行 `infoInhibitor: false` 是死配置；② `grep -rl InfoInhibitor` 定位到它在 `general.rules` 里，与 **TargetDown** 同住一个文件；③ 读 chart 默认 `alertmanager.config`：它原先把 Watchdog 路由到 `null`，InfoInhibitor 则靠 inhibit_rules 压住——但**单独触发时没有别的告警能当抑制源**，于是落到我们的收口路由被发了邮件 | 两个原因叠加：**死配置没把规则关掉** + **收口路由把 `severity=none` 也收进来了** | 删掉死配置；路由层加 `severity = none → receiver discard`。**不删规则文件**：`general.rules` 里还有 TargetDown，关整组会误伤 |
 | 8 | `deploy-task7.sh` 的验收 1、2 报失败，但随后告警实际正常触发、邮件也到了 | 对时间线：脚本在 `kubectl apply` 后只等 5 秒就断言 | **链路存在异步延迟**——Prometheus 发现「规则文件新增」要等 Operator 写文件 + config-reloader 触发 reload + Prometheus 重读，官方预期**最长 1 分钟**；Operator 生成 Alertmanager 配置并写 Secret 也要几秒。apply 完立刻断言必然误报 | 验收项改成**轮询等待**（规则最多等 90 秒）；验收 2 不再「猜 Secret 名 + grep receiver 前缀」，改为直接读 Alertmanager 的 `/api/v2/status` 拿**生效配置**，不依赖任何命名约定。另写 `scripts/diag-task7.sh` 一次取全链路证据 |
 | 9 | **告警在 Prometheus 里正常 FIRING、Alertmanager 也收到了，但邮件与钉钉一条都不发**；同时邮箱里却躺着一封 `monitoring` 命名空间的 InfoInhibitor 噪声邮件 | ① 读 chart 的 values 与 CRD，确认 `alertmanagerConfigMatcherStrategy` 默认是 `OnNamespace`；② 读 Operator 源码 `pkg/alertmanager/amcfg.go`，`namespaceEnforcer.processRoute` 明确写着「Routes created from AlertmanagerConfig resources should only match alerts that come from the same namespace」并 `append` 了一个 `namespace=<crKey.Namespace>` 匹配条件；③ 关键旁证：**唯一收到的那封邮件恰好是 `namespace=monitoring` 的告警**，与「只有 monitoring 的告警能匹配我们的路由」完全吻合 | AlertmanagerConfig 与业务告警**不在同一个命名空间**（配置在 monitoring、告警在 boutique），而 Operator 默认会把路由限制在配置所在的命名空间 → 业务告警全部落到 chart 默认根路由的 `null` 接收器上被静默丢弃 | 在 values 里设 `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace` → `helm upgrade`。本项目**保留**默认保护（不用 `None`）：因为我们的配置住在 Alertmanager 自己的命名空间，该策略的语义正是「放在我身边的配置 = 集群级策略」 |
+| 10 | 诊断脚本在 ECS 上一执行就崩：`line 18: $'\r': command not found` / `invalid option nameline 19: set: pipefail` / `syntax error near unexpected token \`$'in\r'\`` | 本地 `bash -n` 全过、Git Bash 也能跑 → 说明不是语法问题；用 `grep -qU $'\r'` 检查工作区文件，发现**只有这一个脚本是 CRLF** | 该文件被某个工具（python 以文本模式改写）写成了 CRLF。Windows 侧一切正常，Linux 的 bash 在**解析阶段**就拒绝。**报错不从第一行开始、且完全不像行尾符问题**，极易误判 | `sed -i 's/\r$//' scripts/diag-task7.sh`；`.gitattributes` 已强制 LF 但**只在 add/checkout 时生效、挡不住工作区被写坏**，所以 scp 前加一次 `grep -lU $'\r' scripts/*.sh` 自检（已写进 §3.5） |
+| 11 | `deploy-task7.sh` 的验收 2 连续 6 次「取不到 Alertmanager 的生效配置」，但手动 curl 一切正常 | 核对 Alertmanager 的 OpenAPI 规范（`api/v2/openapi.yaml`） | **`/api/v2/status` 里根本没有 `configYAML` 字段**（写它会静默拿到 `null`，不报错）；正确路径是 **`.config.original`**（返回原始配置字符串） | 改成 `.config.original`；并加了一条兜底：万一 API 再变，就直接 `exec` 进容器读配置文件，路径从容器自己的 `--config.file` 参数里取（不写死路径）。教训：**读第三方 API 前先核对它的 OpenAPI 规范**，别按记忆写字段名 |
 
 ---
 

@@ -50,6 +50,31 @@ bad()  { echo "   ✗ $*"; FAIL=$((FAIL+1)); }
 step() { echo; echo "── $* ──────────────────────────────────────"; }
 die()  { echo; echo "[中止] $*" >&2; exit 2; }
 
+# 读取 Alertmanager 的**生效配置**（Operator 合并后的最终配置）。
+#
+# 为什么不用 /api/v2/status 的 configYAML：**Alertmanager 根本没有这个字段**。
+# 实测踩坑：v2 status 返回的是 `config.original`（一个字符串，装着完整原始配置）。
+# 写成 `.configYAML` 不会报错，只会拿到 null —— 于是验收项静默失败、六次重试全部空手而归。
+# 正确路径：.config.original
+#
+# 兜底：万一将来 API 又变，就直接进容器把配置文件读出来。
+# 路径不写死，从容器自己的 --config.file 参数里取 —— 这样 Operator 换路径也不会失效。
+am_effective_config() {
+  local cfg pod path
+  cfg=$(curl -s -m 10 "http://127.0.0.1:${AM_PORT}/api/v2/status" 2>/dev/null \
+        | jq -r '.config.original // empty' 2>/dev/null)
+  if [[ -n "$cfg" ]]; then printf '%s' "$cfg"; return 0; fi
+
+  pod=$(kubectl -n "$NS_MON" get pods -l app.kubernetes.io/name=alertmanager \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  [[ -z "$pod" ]] && return 1
+  path=$(kubectl -n "$NS_MON" get pod "$pod" \
+         -o jsonpath='{range .spec.containers[*].args[*]}{@}{"\n"}{end}' 2>/dev/null \
+         | sed -n 's/^--config\.file=//p' | head -1)
+  [[ -z "$path" ]] && path=/etc/alertmanager/config/alertmanager.yaml
+  kubectl -n "$NS_MON" exec "$pod" -c alertmanager -- cat "$path" 2>/dev/null
+}
+
 # port-forward 的临时端口
 PROM_PORT=19090
 AM_PORT=19093
@@ -216,13 +241,13 @@ sleep 4
 
 AMCFG=""
 for i in 1 2 3 4 5 6; do
-  AMCFG=$(curl -s -m 10 "http://127.0.0.1:${AM_PORT}/api/v2/status" 2>/dev/null | jq -r '.configYAML' 2>/dev/null)
-  [[ -n "$AMCFG" && "$AMCFG" != "null" ]] && break
+  AMCFG=$(am_effective_config 2>/dev/null)
+  [[ -n "$AMCFG" ]] && break
   echo "     等待 Alertmanager 生效…（第 ${i}/6 次）"
   sleep 5
 done
 
-if [[ -n "$AMCFG" && "$AMCFG" != "null" ]]; then
+if [[ -n "$AMCFG" ]]; then
   if printf '%s' "$AMCFG" | grep -q 'boutique-alertmanager-config'; then
     ok "验收 2：Alertmanager 生效配置里已包含本项目的路由"
     echo "      实际 receiver 名："
@@ -293,11 +318,13 @@ cat <<EOF
    · 钉钉收到告警的时刻
 
  如果这个脚本是你第一次部署，注意本机 scp 命令是：
+   # 先自检行尾符（CRLF 会让脚本在 Linux 上解析期就崩）：
+   #   grep -lU $'\r' scripts/*.sh && echo "上面这些要先 sed -i 's/\r$//' 修一下"
    ssh root@<cp公网IP> 'mkdir -p ~/task7'
    scp manifests/alerts/dingtalk-webhook.yaml \\
        manifests/alerts/boutique-alert-rules.yaml \\
        manifests/alerts/alertmanager-config.yaml root@<cp公网IP>:~/task7/
    scp downloads/secrets/dingtalk-config.yml        root@<cp公网IP>:~/dingtalk-config.yml
-   scp scripts/deploy-task7.sh scripts/alert-drill.sh root@<cp公网IP>:~/
+   scp scripts/deploy-task7.sh scripts/alert-drill.sh scripts/diag-task7.sh root@<cp公网IP>:~/
 EOF
 exit 0
