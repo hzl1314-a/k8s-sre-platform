@@ -82,6 +82,25 @@ else
     ok "抑制规则看起来保留了"
   fi
   printf '%s' "$AMCFG" | sed -n '/^inhibit_rules:/,/^route:/p' | head -40 | sed 's/^/    /'; echo
+
+  # ★ 高频陷阱专查：Operator 的 alertmanagerConfigMatcherStrategy 默认值 OnNamespace
+  #   会给 AlertmanagerConfig 里的**每条路由**追加 `namespace = <配置所在命名空间>`，
+  #   导致「配置在 monitoring、告警在 boutique」时一条都匹配不上（现象：告警 FIRING 但不发通知）。
+  echo "  ── 【高频陷阱】路由上有没有被追加 namespace 限制 ──"
+  if printf '%s' "$AMCFG" | grep -qE 'namespace[[:space:]]*=[[:space:]]*=?"?monitoring"?'; then
+    bad "检测到路由被追加了 namespace=\"monitoring\" 限制！"
+    echo "      这意味着只有 monitoring 命名空间的告警会走我们的路由，"
+    echo "      业务告警（namespace=boutique）会被丢到默认的 null 接收器 —— 一条通知都不会发。"
+    echo "      修法（二选一，推荐前者）："
+    echo "        · 在 kube-prometheus-stack values 里设"
+    echo "            alertmanager.alertmanagerSpec.alertmanagerConfigMatcherStrategy.type:"
+    echo "              OnNamespaceExceptForAlertmanagerNamespace"
+    echo "          然后 helm upgrade（本项目已在 monitoring/kube-prometheus-stack-values.yaml 配好）"
+    echo "        · 或者把 AlertmanagerConfig 挪到与告警相同的命名空间（本项目不采用：会变成单命名空间策略）"
+  else
+    ok "路由没有被追加 namespace 限制（匹配策略是 None 或 OnNamespaceExceptForAlertmanagerNamespace）"
+  fi
+
 fi
 
 # ---------------------------------------------------------------------------

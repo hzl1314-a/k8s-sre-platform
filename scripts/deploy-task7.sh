@@ -232,6 +232,19 @@ if [[ -n "$AMCFG" && "$AMCFG" != "null" ]]; then
     bad "验收 2：生效配置里找不到本项目的路由（AlertmanagerConfig 没被选中）"
     echo "      检查 alertmanager.alertmanagerSpec.alertmanagerConfigSelector 与 CR 的标签"
   fi
+
+  # ★ 高频陷阱：Operator 的 alertmanagerConfigMatcherStrategy 默认 OnNamespace，
+  #   会给每条路由追加 namespace=<配置所在命名空间>。配置在 monitoring、告警在 boutique 时，
+  #   结果是「告警正常触发但一条通知都不发」。这一项必须单独查，否则路由看起来是"合并成功"的。
+  if printf '%s' "$AMCFG" | grep -qE 'namespace[[:space:]]*=[[:space:]]*=?"?monitoring"?'; then
+    bad "验收 2b：路由被追加了 namespace=\"monitoring\" 限制 → 业务告警（namespace=boutique）不会走本路由！"
+    echo "      现象：Prometheus 里告警 FIRING、Alertmanager 也收到了，但邮件/钉钉一条都不发。"
+    echo "      修法：kube-prometheus-stack values 里设"
+    echo "            alertmanager.alertmanagerSpec.alertmanagerConfigMatcherStrategy.type=OnNamespaceExceptForAlertmanagerNamespace"
+    echo "            然后 helm upgrade（本项目 values 已配好，执行过一次 upgrade 即可）"
+  else
+    ok "验收 2b：路由未被追加 namespace 限制（匹配策略正确）"
+  fi
 else
   bad "验收 2：取不到 Alertmanager 的生效配置（port-forward 失败？）"
   echo "      也可手工核对：port-forward 9093 后打开 http://localhost:9093 → Status → Config"

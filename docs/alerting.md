@@ -62,6 +62,49 @@
 > 下面仍然把每一步写清楚，因为它们是你排障时的定位依据；
 > 出问题时不要跳过原理去瞎试。
 
+### ⚠️ 首次部署前必做：修正 Alertmanager 的命名空间匹配策略
+
+**不做这一步，后面所有工作都会「看起来成功、实际一条通知都发不出去」。**
+
+Prometheus Operator 的 `alertmanagerConfigMatcherStrategy.type` **默认值是 `OnNamespace`**
+（CRD 里写死的 `default: OnNamespace`）。它的作用是在生成配置时，给 AlertmanagerConfig 里的
+**每一条路由**追加一个 `namespace = <该 AlertmanagerConfig 所在命名空间>` 的匹配条件
+（源码：`pkg/alertmanager/amcfg.go` 的 `namespaceEnforcer.processRoute`）。
+
+我们的 AlertmanagerConfig 在 `monitoring`，而业务告警的 `namespace` 是 `boutique`
+→ 追加的 `namespace = monitoring` 让业务告警**一条都匹配不上我们的路由**
+→ 全部落到 chart 默认根路由的 `null` 接收器上被静默丢弃。
+
+**实测症状（2026-09-13 演练）**：告警在 Prometheus 里正常 FIRING、Alertmanager 也收到了，
+**但邮件与钉钉一条都不发**；反而 `monitoring` 命名空间的 `InfoInhibitor` 噪声告警被发了邮件
+（因为它恰好是 `namespace=monitoring`）——这个「奇怪的噪声」其实正是定位问题的线索。
+
+修复（values 已配好，只需执行 upgrade）：
+
+```bash
+# 本机：把改好的 values 传上去
+scp monitoring/kube-prometheus-stack-values.yaml root@<cp公网IP>:~/
+
+# cp 上：upgrade（chart 包在 cp 上已有，见 downloads/README.md 的 helm 安装说明）
+helm upgrade kube-prometheus-stack ~/kube-prometheus-stack-90.1.1.tgz \
+  -n monitoring -f ~/kube-prometheus-stack-values.yaml
+
+# 验证：Alertmanager 对象上出现了这个字段
+kubectl -n monitoring get alertmanager kube-prometheus-stack-alertmanager \
+  -o jsonpath='{.spec.alertmanagerConfigMatcherStrategy.type}{"\n"}'
+# 期望输出：OnNamespaceExceptForAlertmanagerNamespace
+```
+
+> **为什么选 `OnNamespaceExceptForAlertmanagerNamespace` 而不是 `None`**（面试可讲）：
+> 我们的 AlertmanagerConfig 恰好住在 Alertmanager 自己的命名空间（`monitoring`），
+> 这个策略的语义正是「放在我身边的配置 = 集群级策略」，所以本项目的路由覆盖全集群，
+> 同时**保留**了「其它命名空间的 AlertmanagerConfig 仍受命名空间限制」这层默认保护。
+> 选 `None` 能用，但等于把保护全关了，没有理由。
+>
+> 三种取值对比：`OnNamespace`（默认，只管自己命名空间）｜
+> `OnNamespaceExceptForAlertmanagerNamespace`（本项目的选择）｜`None`（完全不加限制）。
+
+
 ### 第 0 步：先在本机验证两个凭据（强烈建议，能省一整轮返工）
 
 **为什么值得单独做**：凭据是唯一「不是代码、只能靠试」的东西。
@@ -480,6 +523,7 @@ curl -s -X POST http://127.0.0.1:9093/api/v2/alerts -H 'Content-Type: applicatio
 | 4 | 未提及给转发组件挂 ServiceMonitor | 该组件不暴露 `/metrics`，挂了会造成永久 `up=0` | 不加 ServiceMonitor，改用 `alertmanager_notifications_failed_total` 从结果侧监控它 |
 | 5 | `monitoring/kube-prometheus-stack-values.yaml` 里写着 `infoInhibitor: false`、`watchdog: false`、`KubeMemoryOvercommit: false`、`KubeCPUOvercommit: false`、`CPUThrottlingHigh: false` | 这 5 个键在 chart 90.1.1 的 `defaultRules.rules` 里**根本不存在**（该段只接受规则文件名键），helm 不报错、静默忽略 | 删掉这 5 行；改为在路由层丢弃不该通知的告警（见下一条）。`CPUThrottlingHigh` 特意保留（任务 8 压测的有力证据） |
 | 6 | 根路由是「收口通道」（所有未匹配告警都发邮件），导致 chart 自带的 `severity=none` 元告警（InfoInhibitor）也进了收件箱 | 见 §7 踩坑表第 7 条 | 增加 `severity = none → receiver discard` 路由；**不删规则**，因为 `general.rules` 里还住着 TargetDown |
+| 7 | 未提及 Operator 的 `alertmanagerConfigMatcherStrategy` 默认值 | 默认 `OnNamespace` 会给 AlertmanagerConfig 里**每条路由**追加 `namespace = <配置所在命名空间>`；配置在 monitoring 而告警在 boutique → **一条通知都发不出去**（告警却在 Prometheus 里正常 FIRING） | `monitoring/kube-prometheus-stack-values.yaml` 里设 `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace`，并 `helm upgrade`。**这是首次部署前必做的一步**，见 §2 开头的说明块 |
 
 ---
 
@@ -497,6 +541,7 @@ curl -s -X POST http://127.0.0.1:9093/api/v2/alerts -H 'Content-Type: applicatio
 | 6 | 邮件配置里的 `headers.Subject` | 与 CRD 的 `description` 对照 | 该字段 schema 跨 Operator 版本不一致，且其值是默认行为 | 直接删掉，见 §6 第 3 条 |
 | 7 | 演练后邮箱里收到一封 `[FIRING:1] InfoInhibitor … severity=none` 的噪声邮件，真正该看的 `DeploymentReplicasUnavailable` 反而不显眼 | ① 查 chart 的 values：`defaultRules.rules` 段里**没有** `infoInhibitor` 键（只有规则文件名键）→ values 里那行 `infoInhibitor: false` 是死配置；② `grep -rl InfoInhibitor` 定位到它在 `general.rules` 里，与 **TargetDown** 同住一个文件；③ 读 chart 默认 `alertmanager.config`：它原先把 Watchdog 路由到 `null`，InfoInhibitor 则靠 inhibit_rules 压住——但**单独触发时没有别的告警能当抑制源**，于是落到我们的收口路由被发了邮件 | 两个原因叠加：**死配置没把规则关掉** + **收口路由把 `severity=none` 也收进来了** | 删掉死配置；路由层加 `severity = none → receiver discard`。**不删规则文件**：`general.rules` 里还有 TargetDown，关整组会误伤 |
 | 8 | `deploy-task7.sh` 的验收 1、2 报失败，但随后告警实际正常触发、邮件也到了 | 对时间线：脚本在 `kubectl apply` 后只等 5 秒就断言 | **链路存在异步延迟**——Prometheus 发现「规则文件新增」要等 Operator 写文件 + config-reloader 触发 reload + Prometheus 重读，官方预期**最长 1 分钟**；Operator 生成 Alertmanager 配置并写 Secret 也要几秒。apply 完立刻断言必然误报 | 验收项改成**轮询等待**（规则最多等 90 秒）；验收 2 不再「猜 Secret 名 + grep receiver 前缀」，改为直接读 Alertmanager 的 `/api/v2/status` 拿**生效配置**，不依赖任何命名约定。另写 `scripts/diag-task7.sh` 一次取全链路证据 |
+| 9 | **告警在 Prometheus 里正常 FIRING、Alertmanager 也收到了，但邮件与钉钉一条都不发**；同时邮箱里却躺着一封 `monitoring` 命名空间的 InfoInhibitor 噪声邮件 | ① 读 chart 的 values 与 CRD，确认 `alertmanagerConfigMatcherStrategy` 默认是 `OnNamespace`；② 读 Operator 源码 `pkg/alertmanager/amcfg.go`，`namespaceEnforcer.processRoute` 明确写着「Routes created from AlertmanagerConfig resources should only match alerts that come from the same namespace」并 `append` 了一个 `namespace=<crKey.Namespace>` 匹配条件；③ 关键旁证：**唯一收到的那封邮件恰好是 `namespace=monitoring` 的告警**，与「只有 monitoring 的告警能匹配我们的路由」完全吻合 | AlertmanagerConfig 与业务告警**不在同一个命名空间**（配置在 monitoring、告警在 boutique），而 Operator 默认会把路由限制在配置所在的命名空间 → 业务告警全部落到 chart 默认根路由的 `null` 接收器上被静默丢弃 | 在 values 里设 `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace` → `helm upgrade`。本项目**保留**默认保护（不用 `None`）：因为我们的配置住在 Alertmanager 自己的命名空间，该策略的语义正是「放在我身边的配置 = 集群级策略」 |
 
 ---
 

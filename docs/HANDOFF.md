@@ -173,6 +173,7 @@ k8s-sre-platform/
 | 9 | **values 里的键名不存在时 helm 不报错** | `defaultRules.rules` 只接受**规则文件名**键（general / kubernetesResources / node …）。曾写的 `infoInhibitor` / `watchdog` / `KubeMemoryOvercommit` / `KubeCPUOvercommit` / `CPUThrottlingHigh` 全是死配置，静默忽略。改 values 前先在 chart 包里 `grep` 一下键名 |
 | 10 | **apply 完立刻断言「没生效」必然误报** | Operator 写规则文件 + config-reloader 触发 reload + Prometheus 重读，官方预期**最长 1 分钟**；生成 Alertmanager 配置同理。校验脚本必须轮询等待，不要 apply 后 sleep 5 就判定 |
 | 11 | **要不要通知 ≠ 规则要不要触发** | 用 Alertmanager 的路由表达「谁该收到什么」，别去删规则。例：`severity = none` 的元告警（InfoInhibitor）在收口路由下会污染收件箱，正确做法是加一条 `→ receiver discard` 的路由（空接收器即官方支持的丢弃写法），而不是关掉整组规则（`general.rules` 里还有 TargetDown） |
+| 12 | **AlertmanagerConfig 与告警不在同一命名空间 = 一条通知都发不出** | Operator 的 `alertmanagerConfigMatcherStrategy.type` **默认 `OnNamespace`**，会给 AlertmanagerConfig 里**每条路由**追加 `namespace = <配置所在命名空间>`（源码 `pkg/alertmanager/amcfg.go` 的 `namespaceEnforcer.processRoute`）。我们的配置在 `monitoring`、业务告警在 `boutique` → 业务告警全被丢到默认 `null` 接收器。**症状极迷惑**：Prometheus 里告警正常 FIRING、Alertmanager 也收到了，就是不发通知；唯一收到的那封邮件偏偏是 `monitoring` 命名空间的 InfoInhibitor。修法：values 里设 `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace`（本项目选它而非 `None`：配置住在 Alertmanager 自己的命名空间，该策略语义正是「身边的配置=集群级策略」，且保留了对其它命名空间的默认保护），然后 `helm upgrade` |
 
 ### 5.4 工具使用类（给「人」的提醒）
 
@@ -235,14 +236,32 @@ k8s-sre-platform/
 | T+262s | 告警 Resolved（距恢复 30 秒） |
 | — | 通道发送计数：`email` 0→1，**`webhook`（钉钉）0→0** ⚠️ |
 
-**当前卡点**：钉钉通道 0 次发送，待定位。
-另外邮箱收到的是 `InfoInhibitor`（`severity=none`）噪声告警——原因已查明：
-values 里 5 个**死配置键**（见 §5.3 第 9 条）+ 收口路由把元告警也收了进来，**已修正**
-（§5.3 第 11 条、`docs/alerting.md` §6 第 5/6 条、§7 第 7 条）。
-演练脚本自带的验收 1/2 曾误报失败，也已修正（§5.3 第 10 条、§7 第 8 条）。
+**卡点根因（已定位，见 §5.3 第 12 条）**：钉钉与邮件**都没收到主告警**，
+原因是 Operator 的 `alertmanagerConfigMatcherStrategy` 默认 `OnNamespace`，
+给我们 AlertmanagerConfig 的每条路由强制追加了 `namespace = monitoring`
+→ `boutique` 的告警一条都匹配不上，全被丢到默认 `null` 接收器。
+唯一收到的那封 InfoInhibitor 邮件恰好是 `monitoring` 命名空间的——这条「奇怪的噪声」正是定位线索。
 
-**下一步**：在 cp 上跑 `bash ~/diag-task7.sh` —— 7 段一次取证，含**绕过 Prometheus 的
-端到端注入测试**（会真的发邮件与钉钉），把完整输出贴回来即可定位。
+**需要执行的一步（改 values + upgrade，云上操作由本人做）**：
+
+```bash
+# 本机
+scp monitoring/kube-prometheus-stack-values.yaml root@8.155.129.89:~/
+# cp 上（helm 若未装见 downloads/README.md）
+helm upgrade kube-prometheus-stack ~/kube-prometheus-stack-90.1.1.tgz \
+  -n monitoring -f ~/kube-prometheus-stack-values.yaml
+```
+
+顺带已修掉的两个问题（都会造成误判，详见 §5.3 第 9、10 条与 `docs/alerting.md` §6/§7）：
+values 里 5 个**死配置键**（chart 90.1.1 中不存在，静默忽略）、
+部署脚本验收 1/2 的**检查时机与方法**缺陷（apply 后立刻断言必然误报）。
+
+**下一步**：upgrade 之后重跑
+
+```bash
+bash ~/alert-drill.sh --hold 150     # 看这次邮件与钉钉是否都到
+bash ~/diag-task7.sh                 # 若还有问题，7 段一次取证（含绕过 Prometheus 的端到端注入）
+```
 
 
 ### 任务 8：HPA 与压测

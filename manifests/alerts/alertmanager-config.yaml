@@ -9,6 +9,23 @@
 # 执行顺序（必须按此顺序，否则本文件不生效）
 # -----------------------------------------------------------------------------
 #
+# 0) ★ 先修 Operator 的命名空间匹配策略 —— **不做这一步，本文件会「成功加载但一条通知都发不出」**
+#
+#      本文件在 monitoring 命名空间，而业务告警的 namespace 是 boutique。
+#      Prometheus Operator 的 `alertmanagerConfigMatcherStrategy.type` **默认值是 OnNamespace**，
+#      它会给本文件里的**每一条路由**追加一个 `namespace = monitoring` 匹配条件
+#      （源码见 pkg/alertmanager/amcfg.go 的 namespaceEnforcer.processRoute），
+#      于是 boutique 的告警一条都匹配不上本路由 → 全部落到 chart 默认根路由的 null 接收器被丢弃。
+#
+#      症状极具迷惑性：Prometheus 里告警正常 FIRING、Alertmanager 也收到了，
+#      但邮件和钉钉一条都不发；反而 monitoring 命名空间的 InfoInhibitor 噪声告警会被发出来。
+#
+#      修法（已写进 monitoring/kube-prometheus-stack-values.yaml，执行一次 upgrade 即可）：
+#        alertmanager.alertmanagerSpec.alertmanagerConfigMatcherStrategy.type:
+#          OnNamespaceExceptForAlertmanagerNamespace
+#        helm upgrade kube-prometheus-stack ~/kube-prometheus-stack-90.1.1.tgz \
+#          -n monitoring -f ~/kube-prometheus-stack-values.yaml
+#
 # 1) 创建邮箱授权码 Secret（**不要把授权码写进 YAML 提交到仓库**）
 #      kubectl -n monitoring create secret generic alertmanager-email-secret \
 #        --from-literal=password='<QQ邮箱SMTP授权码>'

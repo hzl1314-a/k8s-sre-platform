@@ -94,6 +94,40 @@ alertmanager:
     #   该字段在 90.x 的 alertmanagerSpec 下已不存在）
     alertmanagerConfigSelector: {}
     alertmanagerConfigNamespaceSelector: {}
+
+    # ★ 2026-09-13 关键修复：不加这一段，我们写在 monitoring 命名空间里的
+    #   AlertmanagerConfig **永远不会匹配到 boutique 命名空间的告警**。
+    #
+    #   原因（这条极隐蔽，务必记牢）：Prometheus Operator 的
+    #   `alertmanagerConfigMatcherStrategy.type` **默认值是 `OnNamespace`**
+    #   （见 CRD 里的 `default: OnNamespace`）。它的作用是在生成配置时，
+    #   给 AlertmanagerConfig 里的**每一条路由**都追加一个
+    #   `namespace = <该 AlertmanagerConfig 所在命名空间>` 的匹配条件：
+    #     // 摘自 prometheus-operator/pkg/alertmanager/amcfg.go
+    #     //   Routes created from AlertmanagerConfig resources should only match
+    #     //   alerts that come from the same namespace.
+    #     r.Matchers = append(r.Matchers, Matcher{Name: "namespace", Value: crKey.Namespace, ...})
+    #
+    #   我们的 AlertmanagerConfig 在 `monitoring`，而业务告警的 namespace 是 `boutique`
+    #   → 所有规则被追加 `namespace = monitoring` → 业务告警一条都匹配不上我们的路由
+    #   → 全部落到 chart 默认根路由的 `null` 接收器上被静默丢弃。
+    #   实测症状：告警在 Prometheus 里正常 FIRING、Alertmanager 也收到了，
+    #   但邮件与钉钉**一条都不发**；反而 `monitoring` 命名空间的 InfoInhibitor 噪声告警被发了邮件。
+    #
+    #   三种取值的取舍：
+    #     OnNamespace（默认）                            → 每个 AlertmanagerConfig 只管自己命名空间
+    #     OnNamespaceExceptForAlertmanagerNamespace      → 同上，但「位于 Alertmanager 所在命名空间的配置」
+    #                                                      视为集群级策略、不加限制  ← 本项目用这个
+    #     None                                          → 全部不加限制（最省事，但也丢掉了默认保护）
+    #
+    #   为什么选中间这个而不是 None：我们的 AlertmanagerConfig 恰好就住在 Alertmanager
+    #   自己的命名空间（monitoring），这个策略的语义正好是「放在我身边的配置 = 全局策略」——
+    #   既让本项目的路由覆盖全集群，又保留了「别的命名空间的 AlertmanagerConfig 仍被限制」的默认保护。
+    #
+    #   改完必须 helm upgrade 才生效（见本文件开头的安装命令，把 install 换成 upgrade）。
+    alertmanagerConfigMatcherStrategy:
+      type: OnNamespaceExceptForAlertmanagerNamespace
+
     replicas: 1
     resources:
       requests:
