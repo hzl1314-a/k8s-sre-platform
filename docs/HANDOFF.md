@@ -418,7 +418,10 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
       targets 无 kube-proxy、`up == 0` 空且 ScrapeTargetDown 清零。
       本地渲染 diff 验证先例（只消失 4 个资源）保留在
       `downloads/render-kps-{before,after}.out`
-- [ ] 仓库还没 push 到 GitHub
+- [ ] **push GitHub（用户选择延后，本地已全部就绪 2026-09-14）**：
+      commit `4625483`（46 文件）+ tag `v1.0` 已打好，远端仓库未创建；
+      push 时建仓 k8s-sre-platform（hzl1314-a，GCM 有凭据，gh 未装可用 API 建仓），
+      安全扫描已过（SMTP 走 Secret 引用、钉钉 token 已 ignore、无明文凭据）
 
 ---
 
