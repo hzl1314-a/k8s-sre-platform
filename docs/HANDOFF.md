@@ -245,12 +245,15 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
 `msg="Notify success"`，但那条日志在「首次投递成功」时是 **Debug** 级别、默认不打印，
 真机 grep 零命中。现改为演练期间每 2s 直接采样 Alertmanager `/metrics`。
 
-**剩余事项**：
+**剩余事项（只剩一件）**：
 
-- 截图 `13-alert-rule-fired.png` 待补（Prometheus → Alerts 页面显示 FIRING，带地址栏）。
-  14/15/16 已归档到 `docs/screenshots/`（用 20:40 / 20:43 那一版）。
-- 跑一次**新版**脚本 `bash ~/alert-drill.sh --hold 150` 拿到精确投递秒数，
-  再用 `bash ~/alert-drill.sh --report` 回填 `docs/alerting.md` §4 里两组标「≈」的数。
+- 截图 `13-alert-rule-fired.png`（Prometheus → Alerts 页面显示 FIRING，带地址栏）。
+  14/15/16 已归档到 `docs/screenshots/`；操作步骤见 `docs/screenshots/README.md`「怎么截 13」。
+
+**最终实测（2026-09-13 21:04:38 注入，第四次演练）**：
+`Pending +9s → Firing +70s → 邮件/钉钉投递 +74s → 恢复 +220s → 恢复通知 +222s → Resolved +250s`
+通道计数 `email` 21→23、`webhook` 4→6，**两通道各 +2**。
+时间线与投递秒数已回填 `docs/alerting.md` §4，可直接用于 README / 简历。
 
 **投递时刻的取证方式改过一次（别按旧版理解）**：原设计读 Alertmanager 日志里的
 `msg="Notify success"`，实测**取不到**——源码 `notify/retry_stage.go` 中
