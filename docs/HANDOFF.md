@@ -30,7 +30,7 @@
 | 4 | Online Boutique 上线（22 Pod、副本 2、反亲和） | ✅ |
 | 5 | Traefik Ingress + NodePort 暴露（30080/30443/30800） | ✅ |
 | 6 | 可观测性（kube-prometheus-stack + Loki + Promtail + 自建看板） | ✅ |
-| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟨 **配置与手册已就绪，待 2 个凭据上云**（`docs/alerting.md`） |
+| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟨 **凭据已验证；配置就绪，待执行部署 + 演练**（`docs/alerting.md`） |
 | 8 | metrics-server + HPA 自动扩缩容 + hey 压测 | ⬜ |
 | 9 | 故障演练（drain 优雅排水 / 硬宕机） | ⬜ |
 | 10 | README 收口 + 简历定稿 | ⬜ |
@@ -74,7 +74,7 @@
 |---|---|
 | Grafana 管理员 | `kubectl -n monitoring get secret grafana-admin`（创建时用 `--from-literal` 注入，密码不在 git 里） |
 | kubeconfig | cp 节点 `/etc/kubernetes/admin.conf` |
-| 邮箱 SMTP 授权码 / 钉钉 secret | **尚未创建**（任务 7 前置），拿到后必须放 Secret，不许写进 git |
+| 邮箱 SMTP 授权码 / 钉钉 secret | ✅ 已获取并在本机验证可用。**明文只在本机 `downloads/secrets/dingtalk-config.yml`（已被 .gitignore 忽略）与集群 Secret 里**；仓库内任何文件都不含明文凭据 |
 
 ### 3.4 安全组（阿里云控制台）
 
@@ -194,16 +194,21 @@ k8s-sre-platform/
 > ★ **执行手册：`docs/alerting.md`（S4 阶段完整步骤，含时间预算表、排障分段定位、面试要点）**
 > 交接文档这里只留摘要；手册里的内容在 2026-09-13 已按实测逐条核对并修正。
 
-**前置**（需人工去申请，只有本人能拿）：
-1. QQ 邮箱网页版 → 设置 → 账户 → 开启 IMAP/SMTP → 生成**授权码**（不是登录密码）
-2. 钉钉群 → 设置 → 智能群助手 → 添加「自定义」机器人 → 安全设置选**加签** → 拿 webhook + secret
+**前置（✅ 2026-09-13 已完成）**：
+1. QQ 邮箱 SMTP 授权码 —— 已获取，并在**本机验证 SMTP 登录成功**（465 隐式 TLS）
+2. 钉钉机器人 webhook + 加签 secret —— 已获取，并在本机**实发一条消息，返回 `errcode:0`**
 
-**执行（5 步，细节见手册）**：
-1. 邮箱授权码进 Secret：`kubectl -n monitoring create secret generic alertmanager-email-secret --from-literal=password='<授权码>'`
-2. 钉钉转发组件：造 `~/dingtalk-config.yml` → 存 Secret → `kubectl apply -f manifests/alerts/dingtalk-webhook.yaml`
-3. 应用规则与路由：`kubectl apply -f manifests/alerts/{boutique-alert-rules,alertmanager-config}.yaml`
-4. 触发演练：`bash scripts/alert-drill.sh --hold 150`（自动记录时间线 + 各通道发送计数增量）
-5. 留证：截图 13-16，时间线回填 `docs/alerting.md` §4
+> 两个凭据只存在于**两处不会进 git 的地方**：本机 `downloads/secrets/dingtalk-config.yml`
+> （命中 `.gitignore` 的 `downloads/*` 与 `dingtalk-config.yml` 两条规则，已用
+> `git check-ignore -v` 验过）与集群内的 Secret。
+> 想确认仓库里没有明文凭据：`git grep -n -I 'SEC3\|access_token=8bf' HEAD` 应无输出。
+
+**执行（一条命令，或手工 5 步——手册里有逐条原理）**：
+1. 本机上传 + 在 cp 上跑 `bash ~/deploy-task7.sh`
+   （脚本逐步执行并**当场验收 4 项**：规则已加载 / 路由已合并 / 转发组件在跑 / Prometheus 认到 Alertmanager）
+   scp 清单见 `docs/alerting.md` §3.5
+2. 触发演练：`bash scripts/alert-drill.sh --hold 150`（自动记录时间线 + 各通道发送计数增量）
+3. 留证：截图 13-16，时间线回填 `docs/alerting.md` §4
 
 **验收**：故障到告警 ≤2 分钟（预计 95~110 秒，推理见手册 §3）。
 **主验收告警是 `DeploymentReplicasUnavailable`（`for: 1m`）**，

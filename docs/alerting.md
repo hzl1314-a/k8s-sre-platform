@@ -55,7 +55,52 @@
 
 ---
 
-## 2. 部署（严格按顺序，共 5 步）
+## 2. 部署（严格按顺序，共 6 步）
+
+> **最快路径**：本节第 0 步做完后，后面 1~5 步可以用一条命令代替——
+> `bash ~/deploy-task7.sh`（脚本会逐步执行并**当场验收 4 项**，失败会指出查什么）。
+> 下面仍然把每一步写清楚，因为它们是你排障时的定位依据；
+> 出问题时不要跳过原理去瞎试。
+
+### 第 0 步：先在本机验证两个凭据（强烈建议，能省一整轮返工）
+
+**为什么值得单独做**：凭据是唯一「不是代码、只能靠试」的东西。
+如果在集群里才发现写错，你会同时面对「告警没触发 / 路由没配对 / 钉钉配置错了」
+三个可能性，排查成本高得多。而这两样**在本地就能验完**：
+
+```bash
+# ① 钉钉：按官方「加签」算法算签名并真发一条消息
+#    返回 {"errcode":0,"errmsg":"ok"} 即说明 webhook + secret 这一对是对的
+python3 - <<'PY'
+import base64, hashlib, hmac, json, time, urllib.parse, urllib.request
+WEBHOOK = "<你的 webhook 完整地址>"
+SECRET  = "<你的加签密钥>"
+ts = str(round(time.time() * 1000))
+sign = urllib.parse.quote_plus(base64.b64encode(
+    hmac.new(SECRET.encode(), "{}\n{}".format(ts, SECRET).encode(),
+             hashlib.sha256).digest()))
+req = urllib.request.Request(
+    "{}&timestamp={}&sign={}".format(WEBHOOK, ts, sign),
+    data=json.dumps({"msgtype": "text",
+                     "text": {"content": "Prometheus 告警通道自测：收到即说明凭据正确"}}).encode(),
+    headers={"Content-Type": "application/json"}, method="POST")
+print(urllib.request.urlopen(req, timeout=20).read().decode())
+PY
+
+# ② QQ 邮箱：只测 SMTP 登录（不发信也能证明授权码有效）
+python3 - <<'PY'
+import smtplib, ssl
+s = smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=25, context=ssl.create_default_context())
+s.login("<你的QQ邮箱>", "<SMTP授权码>")     # 失败会抛异常，内容里就写着原因
+print("登录成功 → 授权码有效"); s.quit()
+PY
+```
+
+> 其他机器人配置错误也会在这一步暴露，而且是**可读的错误码**：
+> `310000` = 签名校验失败（secret 不对，或机器人安全设置不是「加签」）；
+> `300001` / `keywords not in content` = 机器人设的是「关键词」模式但消息里没有那个词。
+
+---
 
 ### 第 1 步：邮箱授权码进 Secret
 
@@ -188,6 +233,39 @@ kubectl -n monitoring logs deploy/kube-prometheus-stack-alertmanager | tail -30
 # ④ Prometheus 是否已把 Alertmanager 当成接收方？
 curl -s localhost:9090/api/v1/alertmanagers | jq -r '.data.activeAlertmanagers[].url'
 ```
+
+---
+
+### 第 3.5 步（可选）：把 1~3 步交给脚本
+
+上面三步手工做完全没问题，但步骤多、每步都要自己核对，容易漏。
+`scripts/deploy-task7.sh` 把它们固化下来，并**当场验收 4 项**：
+
+```bash
+# 本机：把清单、钉钉配置、脚本送上 cp
+ssh root@<cp公网IP> 'mkdir -p ~/task7'
+scp manifests/alerts/dingtalk-webhook.yaml \
+    manifests/alerts/boutique-alert-rules.yaml \
+    manifests/alerts/alertmanager-config.yaml root@<cp公网IP>:~/task7/
+scp downloads/secrets/dingtalk-config.yml root@<cp公网IP>:~/dingtalk-config.yml
+scp scripts/deploy-task7.sh scripts/alert-drill.sh root@<cp公网IP>:~/
+
+# cp 上：一条命令
+bash ~/deploy-task7.sh
+#   凭证用交互式输入（read -s，不回显、不进 shell 历史）
+#   幂等，可重复执行；已存在的东西不会被重复创建
+```
+
+脚本会打印 `通过 N 项，失败 M 项`。四项验收分别是：
+① 规则被 Prometheus 加载了 ② Operator 把路由合并进最终配置了
+③ 转发组件 Pod 在跑 ④ Prometheus 认到了 Alertmanager。
+
+> 这个脚本本身被**用桩命令压测过**：成功路径与失败路径都跑通，
+> 并且因此在交付前抓到一个 bug —— 变量名 `GROUPS` 撞上了 **bash 的内建变量**
+> （它保存当前用户的组 ID），赋值后展开时被 shell 覆盖成一个莫名其妙的大数字，
+> 会让验收结果报出假数据。改名为 `RULE_GROUPS` 后正常
+> （同类要避开的还有 `SECONDS` / `RANDOM` / `UID` / `LINENO` / `PIPESTATUS` / `REPLY`）。
+> 教训：**给别人用的脚本，自己先拿桩数据跑一遍**——这类 bug 手工 review 是看不出来的。
 
 ---
 
@@ -349,7 +427,9 @@ curl -s -X POST http://127.0.0.1:9093/api/v2/alerts -H 'Content-Type: applicatio
 | 1 | `Error: chart "prometheus-webhook-dingtalk" not found in prometheus-community index` | ① `grep -i dingtalk` 仓库 index.yaml → 无任何命中；② GitHub API 列 `helm-charts/charts` 目录 → 该 chart 不在列表中；③ 探历史 release 资产 URL → 404 | prometheus-community 已下架该 chart；但上游**软件**仓库仍在维护（`timonwong/prometheus-webhook-dingtalk`，最新 v2.1.0） | 不再依赖 chart，改为自维护 Deployment/Service 清单，镜像走 `docker.1ms.run/timonwong/prometheus-webhook-dingtalk:v2.1.0`（已用 `scripts/check-images.sh` 走完整 token 流程验证 HTTP 200） |
 | 2 | 看板/告警里 `sum by (service)` 查不出数据，但 Prometheus 里明明有这个指标 | 直接查指标原始标签 → 发现服务名在 `exported_service` 上 | Prometheus 抓取时注入的目标标签 `service` 与指标自带标签同名，`honor_labels=false` 时指标自身的标签被加 `exported_` 前缀 | 所有引用处改用 `exported_service`；这是**静默失效**（不报错、只返回空），已写进规则文件头部警示 |
 | 3 | apply 的自定义资源「成功」但字段不生效 | 用集群真实 CRD 逐字段比对 | CRD 是结构化 schema，未知字段**不报错、直接裁剪** | 写 `scripts/validate-crd-fields.py`，上云前用 `kubectl get crd ... -o yaml` 导出的 CRD 校验清单 |
-| 4 | | | | |
+| 4 | 部署脚本的验收项报出一个莫名其妙的大数字（如「已加载 197121 个规则组」） | 用桩命令跑脚本、`bash -x` 打印实际赋值，发现该变量被 shell 改写 | 变量名 `GROUPS` 撞上了 **bash 内建变量**（保存当前用户的组 ID），赋值后展开时被 shell 覆盖 | 改名 `RULE_GROUPS`；同类要避开 `SECONDS`/`RANDOM`/`UID`/`LINENO`/`PIPESTATUS`/`REPLY`。教训：**给别人的脚本要先拿桩数据自己跑一遍** |
+| 5 | 「连上了没」判断不可靠：连接失败时 curl 仍可能返回 0，于是验收项误报为通过 | 故意让目标不可达，观察脚本判定结果 | 只看 curl 退出码不等于拿到了正确响应 | 就绪判断改为**校验返回内容的结构**（取回 JSON 后 `jq -e '.status == "success"'`），而不是只看退出码 |
+| 6 | 邮件配置里的 `headers.Subject` | 与 CRD 的 `description` 对照 | 该字段 schema 跨 Operator 版本不一致，且其值是默认行为 | 直接删掉，见 §6 第 3 条 |
 
 ---
 

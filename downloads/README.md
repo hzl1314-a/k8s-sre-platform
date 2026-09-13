@@ -61,6 +61,33 @@ python3 scripts/validate-crd-fields.py \
 > `type: array`（`{key, value}` 列表），与部分教程里写的 `map[string]string` 不同。
 > 所以校验一定要用集群自己那份，版本差异会直接决定字段能不能用。
 
+## secrets/ — 含凭据的文件（绝对不入库）
+
+`downloads/secrets/` 存放**含明文凭据**的文件，是本机 → ECS 的中转站。命中的忽略规则：
+`downloads/*`（本目录整体忽略）与 `dingtalk-config.yml`（按文件名忽略，双保险）。
+
+| 文件 | 用途 |
+|---|---|
+| `dingtalk-config.yml` | 钉钉转发组件的配置（含 `access_token` 与加签 `secret`），scp 到 cp 后作为 Secret 的内容源 |
+
+核对某个文件确实被忽略：
+
+```bash
+git check-ignore -v downloads/secrets/dingtalk-config.yml
+# 期望输出形如：.gitignore:8:downloads/*	downloads/secrets/dingtalk-config.yml
+```
+
+核对仓库里没有漏进去的明文凭据（在仓库根目录执行，应无输出）：
+
+```bash
+git grep -n -I 'SEC3' HEAD -- .          # 加签密钥前缀
+git grep -n -I 'access_token=' HEAD -- . # 钉钉 token
+git grep -n -I 'password=' HEAD -- .     # 邮箱授权码
+```
+
+> 部署完成后这些文件**不必长期保留**：集群里的 Secret 才是运行时的真身。
+> 建议演练验收通过后就地删除，需要时按 `docs/alerting.md` 重新从钉钉/QQ 后台取。
+
 ## 为什么 Calico 清单要改镜像地址
 
 大陆 ECS 直连 `quay.io` 不通。原本的计划是「containerd 配 certs.d 镜像加速，YAML 不用动」，
