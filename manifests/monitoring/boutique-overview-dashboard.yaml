@@ -154,7 +154,7 @@ data:
           "id": 3,
           "type": "timeseries",
           "title": "各路由 5xx 错误率",
-          "description": "错误率 = 5xx 请求数 / 总请求数。对应告警规则「frontend 5xx 错误率 > 1%」。",
+          "description": "错误率 = 5xx 请求数 / 总请求数。对应告警规则「frontend 5xx 错误率 > 1%」。查询里的 or 0 * 总量 是个必要惯用法：没有任何 5xx 时该序列根本不存在，PromQL 返回空而不是 0，加这段才能在零错误时显示 0% 而不是 No data。",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -199,7 +199,7 @@ data:
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "100 * sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\",code=~\"5..\"}[5m])) by (exported_service) / sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\"}[5m])) by (exported_service)",
+              "expr": "100 * (sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\",code=~\"5..\"}[5m])) by (exported_service) or 0 * sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\"}[5m])) by (exported_service)) / sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\"}[5m])) by (exported_service)",
               "legendFormat": "{{exported_service}}",
               "refId": "A"
             }
