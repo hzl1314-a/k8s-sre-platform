@@ -7,6 +7,82 @@
 
 ---
 
+## 零、上一轮会话交接摘要（2026-09-13 晚 · 先读这一节）
+
+**一句话**：任务 7（告警）已从「待执行」做到「完整收尾」，下一步是**任务 8**。
+本节是上一轮会话的浓缩，细节都在对应文档里，不需要翻历史聊天记录。
+
+### 这轮做成了什么
+
+| 事项 | 结果 |
+|---|---|
+| 告警双通道验收 | **故障 → 邮件/钉钉投递 = T+74s**（验收线 120s）；4 场演练 82 / 70 / 73 / 70 秒 |
+| 截图 13-16 | 全部归档 `docs/screenshots/`（13 是**合成图**：UI FIRING 徽标 + `/api/v1/alerts` 原始 JSON + kubectl `frontend 0/0` 现场） |
+| 时间线与投递秒数 | 已回填 `docs/alerting.md` §4，可直接进 README / 简历 |
+
+### 这轮修掉的三个根因（都是现成的面试故事）
+
+1. **钉钉的 helm chart 已从 prometheus-community 下架**（仓库索引 / charts 目录 / 历史
+   release 资产三条证据核实）→ 改自维护清单 `manifests/alerts/dingtalk-webhook.yaml`；
+   该组件**不暴露 /metrics**，不能挂 ServiceMonitor（会造成永久 `up=0`）
+2. **values 里 5 个死配置键**（chart 90.1.1 中不存在，helm 静默忽略）+ 收口路由把
+   `severity=none` 的 InfoInhibitor 也发了邮件 → 删死键，并在路由层加
+   `severity=none → receiver discard`（**不删规则**：`general.rules` 里还住着 TargetDown）
+3. **★ 最隐蔽**：Operator 的 `alertmanagerConfigMatcherStrategy` 默认 `OnNamespace`，
+   会给 AlertmanagerConfig **每条路由**追加 `namespace = monitoring`，导致 `boutique`
+   的告警一条都匹配不上——症状极迷惑（Prometheus 正常 FIRING、Alertmanager 也收到了，
+   就是不发通知）。已设 `OnNamespaceExceptForAlertmanagerNamespace`，详见 §5.3 第 12 条
+
+### 投递时刻怎么取（机制迭代过两次，别用旧法）
+
+- ❌ **收件人界面**：邮箱与钉钉桌面客户端都只显示到**分钟**
+- ❌ **Alertmanager 日志**：`msg="Notify success"` 在「首次投递成功」时是 **Debug** 级别
+  （`notify/retry_stage.go`：`if i <= 1 { l.Debug(...) } else { l.Info(...) }`），
+  默认 `logLevel=info` 下 grep 整段日志**零命中**——真机踩过，机制第一次上云就失灵
+- ✅ **现行方案**：演练期间**每 2s 直连 Alertmanager `/metrics`** 采样
+  `alertmanager_notifications_total`，记录各通道**首次自增**时刻（精度 ±2s）。
+  实现在 `scripts/alert-drill.sh` 的 [8/8] 段；`--report` 只读复用 `alert-drill.log.samples`
+
+### ⚠️ 待拍板的遗留问题（本轮唯一没做完的决策）
+
+**`ScrapeTargetDown` 正在常驻 FIRING**：3 个节点的 kube-proxy 指标端点全部 `up==0`
+（kps 默认开启 kubeProxy 抓取，新版 kube-proxy 默认不暴露 10249）。
+不修的代价：每 6 小时一封 warning 邮件，且常驻告警会稀释真告警。二选一：
+
+- **推荐**：kps values 加 `kubeProxy: {enabled: false}` → `helm upgrade`
+  （改动小，可先本地 `helm template` 验证；改完 `ScrapeTargetDown` / `KubeProxyDown` 自动消失）
+- 或给 kube-proxy 打开指标：改 3 个节点的 config 并重启静态 Pod，动静大，不建议
+
+### 这轮新增的文件
+
+| 文件 | 用途 |
+|---|---|
+| `docs/alerting.md` | S4 完整手册（部署 5 步 / 时间预算 / 链路分段排障 / 踩坑表） |
+| `scripts/deploy-task7.sh` | 一键部署 + 4 项当场验收（幂等，Secret 交互式输入不进历史） |
+| `scripts/alert-drill.sh` | 演练：自动时间线 + 逐通道投递判定 + 投递时刻采样；`--report` 只读回填 |
+| `scripts/diag-task7.sh` | 7 段一次取证的只读诊断（含绕过 Prometheus 的端到端注入测试） |
+| `scripts/validate-crd-fields.py` | 用**集群真实 CRD** 校验清单字段（防「字段被静默裁剪」） |
+| `manifests/alerts/*` | 告警规则 8 条 / AlertmanagerConfig / 钉钉转发清单 / 配置模板 |
+
+### 本机环境变化（比本文档旧版描述重要）
+
+- 本地代理 `127.0.0.1:7897` **已失效**；**直连正常**（用环境自带代理变量，别加 `-x`）
+- **GitHub release 资产下载不通**（302 后超时）；二进制走非 GitHub 官方源（helm → `get.helm.sh`）
+- 本机 SSH 到 ECS **需密码**（无免密钥）；AI 可用 paramiko 直连执行命令；
+  浏览器无头截图必须加 `--no-proxy-server`（否则系统代理把 127.0.0.1 拦掉）
+- 单条命令跑超过约 60 秒可能被工具链中断，长任务放后台执行
+
+### 给下一任的开场提示（新会话直接把这段粘贴给 AI 即可）
+
+> 我在接着做 k8s-sre-platform 求职作品集项目（`E://yes//k8s-sre-platform`）。
+> 请先通读 `docs/HANDOFF.md`——尤其「零、上一轮会话交接摘要」和第五节踩坑表，
+> 然后从**任务 8**（metrics-server + HPA + hey 压测）开始。任务 7 已完整收尾，
+> 手册在 `docs/alerting.md`。动手前先提醒我两件事：① 有一个待拍板的遗留问题
+> （kube-proxy 抓取目标全挂，见 HANDOFF 零节）；② 按项目约定，helm values 必须先本地
+> `helm template` 验证、自定义资源必须先过 `scripts/validate-crd-fields.py`。
+
+---
+
 ## 一、这个项目是什么
 
 **一句话**：在阿里云 3 台 ECS 上用 kubeadm 手搭一个生产级 Kubernetes 集群，跑一套微服务，
@@ -292,6 +368,9 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
 - [ ] **有 Pod 累计重启 2-3 次**，待查是否 OOMKilled：
       `kubectl get pods -n boutique -o custom-columns='NAME:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount,LASTSTATE:.status.containerStatuses[*].lastState.terminated.reason'`
       （若是 OOM 就调 limit，并写进踩坑记录——监控第一次跑就抓到真问题，是加分项）
+- [ ] **kube-proxy 抓取目标全挂（待拍板，见零节）**：`ScrapeTargetDown` 常驻 FIRING，
+      `up==0` 的是 3 个节点的 kube-proxy:10249；推荐 kps values 里
+      `kubeProxy: {enabled: false}` 后 `helm upgrade`
 - [ ] 仓库还没 push 到 GitHub
 
 ---
@@ -312,6 +391,8 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
 2. 让 AI 给命令前，先告诉它 **release 名**和当前所处阶段
 3. AI 改完配置会先本地渲染验证（helm template / YAML 校验）再给命令，**照它给的命令执行即可**
 4. 卡住超过 10 分钟就把**报错原文**贴给 AI，别自己硬扛
+5. 新会话开工时，把**零节末尾的「给下一任的开场提示」**整段复制给 AI——
+   它包含了项目位置、该读什么、从哪开始、以及两条必须先说的约定
 
 ---
 
