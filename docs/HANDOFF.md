@@ -30,7 +30,7 @@
 | 4 | Online Boutique 上线（22 Pod、副本 2、反亲和） | ✅ |
 | 5 | Traefik Ingress + NodePort 暴露（30080/30443/30800） | ✅ |
 | 6 | 可观测性（kube-prometheus-stack + Loki + Promtail + 自建看板） | ✅ |
-| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟩 **已完成**：双通道实测均投递成功（T+70s 触发、≈+75s 投递），时间线见 `docs/alerting.md` §4；仅截图 `13` 待补 |
+| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟩 **已完成并收尾**：双通道投递 **T+74s**（验收线 120s），时间线见 `docs/alerting.md` §4，截图 13-16 齐全 |
 | 8 | metrics-server + HPA 自动扩缩容 + hey 压测 | ⬜ |
 | 9 | 故障演练（drain 优雅排水 / 硬宕机） | ⬜ |
 | 10 | README 收口 + 简历定稿 | ⬜ |
@@ -245,10 +245,8 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
 `msg="Notify success"`，但那条日志在「首次投递成功」时是 **Debug** 级别、默认不打印，
 真机 grep 零命中。现改为演练期间每 2s 直接采样 Alertmanager `/metrics`。
 
-**剩余事项（只剩一件）**：
-
-- 截图 `13-alert-rule-fired.png`（Prometheus → Alerts 页面显示 FIRING，带地址栏）。
-  14/15/16 已归档到 `docs/screenshots/`；操作步骤见 `docs/screenshots/README.md`「怎么截 13」。
+**剩余事项：无。** 13-16 四张截图已全部归档到 `docs/screenshots/`，
+时间线与投递秒数已回填 `docs/alerting.md` §4 —— **任务 7 完整收尾**。
 
 **最终实测（2026-09-13 21:04:38 注入，第四次演练）**：
 `Pending +9s → Firing +70s → 邮件/钉钉投递 +74s → 恢复 +220s → 恢复通知 +222s → Resolved +250s`

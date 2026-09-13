@@ -70,7 +70,7 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `13-alert-rule-fired.png` | Prometheus → Alerts 页面，`DeploymentReplicasUnavailable` 状态为 **FIRING**（截图要带上浏览器地址栏，证明是本集群的 Prometheus） | ⬜ **待采集（本阶段唯一还缺的一张，操作步骤见下方「怎么截 13」）** |
+| `13-alert-rule-fired.png` | Prometheus → Alerts 页面，`DeploymentReplicasUnavailable` 状态为 **FIRING** | ✅ 已采集（**合成图**：UI 的 FIRING 徽标 + `/api/v1/alerts` 原始 JSON（`state=firing`、`activeAt=21:43:16`）+ kubectl 现场 `frontend 0/0` 三样同框） |
 | `14-alert-email.png` | 邮箱收到的告警邮件（**必须能看到收件时间**） | ✅ 已采集（20:40 的 `[FIRING:1] DeploymentReplicasUnavailable`，红色横幅） |
 | `15-alert-dingtalk.png` | 钉钉机器人收到的告警（**带上消息时间戳**） | ✅ 已采集（钉钉桌面客户端，**一张图含 FIRING 20:40 与 RESOLVED 20:43 两条**） |
 | `16-alert-recovered.png` | 恢复通知（邮件或钉钉任一即可，证明闭环） | ✅ 已采集（20:43 的 `[RESOLVED]` 邮件，绿色横幅） |
@@ -99,60 +99,34 @@
 >    「这个 70 秒怎么来的」时，图里就有「故障注入」与「Firing」两个锚点自证。
 
 
-### 怎么截 13（S4 唯一还缺的一张）
+### 13 这张是怎么截的（2026-09-13 实录，下次复用）
 
-**为什么它最容易漏**：告警**只在故障期间是 FIRING**，副本一恢复它就变 Resolved 了。
-所以必须在「故障保持」的那段时间里去截，不能等演练脚本跑完。
+**难点**：Prometheus 的 Service 是 ClusterIP，本机浏览器够不到；而告警只在故障期间是
+FIRING，必须在那段时间里截。
 
-**关键点**：Prometheus 的 Service 是 ClusterIP，本机浏览器直连不到，要走 SSH 隧道。
-不用跑完整演练，单独制造一次故障更省事。
+**实际做法**（比原计划的「kubectl port-forward + SSH -L」更省事）：
 
-```bash
-# ── 终端 A（在 cp 上）：把 Prometheus 暴露在 cp 的 127.0.0.1:9090 ──
-kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+1. **隧道**：节点本身就能路由到 ClusterIP（kube-proxy 在每个节点都装了 iptables 规则），
+   所以直接把本机 9090 转发到 `<Prometheus ClusterIP>:9090` 即可，**不需要 kubectl
+   port-forward**（也就不依赖一个必须一直挂着的终端）。
+2. **注入故障**：`kubectl -n boutique scale deploy/frontend --replicas=0`，等 70~90 秒。
+3. **截图**：Chrome 自带的无头截图就够了，不需要浏览器自动化框架——
+   但必须加 `--no-proxy-server`（否则走系统代理，127.0.0.1 会被代理拦成
+   `ERR_CONNECTION_ABORTED`）：
 
-# ── 终端 B（在本机）：把 cp 的 9090 映射到本机，保持不关 ──
-ssh -N -L 9090:127.0.0.1:9090 root@8.155.129.89
+   ```bash
+   chrome.exe --headless=new --disable-gpu --no-proxy-server --hide-scrollbars \
+     --window-size=1560,1080 --virtual-time-budget=15000 \
+     --screenshot=ui.png "http://127.0.0.1:9090/alerts"
+   ```
+4. **补第二锚点**：同时取 `/api/v1/alerts` 的原始 JSON（`state=firing` + `activeAt`）
+   和 `kubectl get deploy`（显示 0/0，证明故障确实在场），三样合成一张图。
+5. **立刻恢复**：`kubectl -n boutique scale deploy/frontend --replicas=2`。
 
-# ── 终端 C（在 cp 上）：制造故障，等告警进入 FIRING ──
-kubectl -n boutique scale deploy/frontend --replicas=0
-#   等 75~90 秒（规则 for: 1m + 求值周期），状态会从 Inactive → Pending → Firing
-```
+> 两个小坑：① SSH 空闲连接会被服务端掐掉，转发进程要带 keepalive 并支持重连，
+> 否则表现为「隧道进程活着但连不上」；② MSYS/Git Bash 会改写看起来像 Windows 路径的
+> 参数（`E://tmp//x` → `E://tmp//x`），传给 Python 前用正斜杠写法最稳。
 
-> 如果你正在跑 `alert-drill.sh`，它用的是 **19090** 端口，与上面的 9090 **不冲突**，
-> 可以并行开着——演练跑到「保持故障 Ns」那一步时去截图最自然。
-
-浏览器打开 **`http://localhost:9090/alerts`**，找到 `DeploymentReplicasUnavailable`，
-点开展开。**截图必须同时可见三样**：
-
-1. 浏览器**地址栏**（`localhost:9090` —— 证明是从这条隧道连进本集群的 Prometheus）
-2. 告警名 `DeploymentReplicasUnavailable` 与 **State = Firing**（红色）
-3. `Active Since` 的时间（要能和 `alert-drill.log` 里的故障时刻对上）
-
-截完**立刻恢复**，别让业务一直挂着：
-
-```bash
-# ── 终端 C（在 cp 上）──
-kubectl -n boutique scale deploy/frontend --replicas=2
-```
-
-**可选的加强证据**（不是必需，但面试时更硬）：在 FIRING 期间另开一个终端跑
-
-```bash
-kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 &
-curl -s localhost:9090/api/v1/alerts | jq -r '.data.alerts[] | select(.labels.alertname=="DeploymentReplicasUnavailable") | "\(.state)  activeSince=\(.activeAt)"'
-# 期望：firing  activeSince=2026-09-13T20:40:3x+08:00
-```
-
-把这段终端输出和浏览器页面**截在同一张图**里（左右并排或上下排列），
-`13` 就同时有了「UI 状态」和「API 原始字段」两个锚点——这比单看 UI 更有说服力。
-
-**归档命令**（截完照做）：
-
-```bash
-# 本机：把新截的图放进仓库（文件名必须完全一致）
-cp ~/Pictures/Screenshots/<你的截图>.png docs/screenshots/13-alert-rule-fired.png
-```
 
 ### S5 压测与 HPA（任务 8）
 
