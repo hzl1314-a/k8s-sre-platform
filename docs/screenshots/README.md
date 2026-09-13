@@ -53,10 +53,10 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `09-grafana-datasources.png` | Grafana → Connections → Data sources：**Prometheus / Alertmanager / Loki 三个都在**，Loki 的 `Save & test` 通过 | 待采集 |
-| `10-grafana-dashboard.png` | **自建业务总览看板**（`Dashboards` 搜索 `Boutique`）：QPS / P95 / 5xx / 重启 / CPU / 内存 / 日志 全部出数 | 待采集 |
-| `11-grafana-pod-metrics.png` | 看板下半部分的单 Pod CPU / 内存曲线 | 待采集 |
-| `12-loki-logs.png` | Explore 中数据源选 Loki，查询 `{namespace="boutique"}` 能看到容器日志 | 待采集 |
+| `09-grafana-datasources.png` | Grafana → Connections → Data sources：**Prometheus / Alertmanager / Loki 三个都在**（Loki 连通性此前已在详情页单独验证过：`Save & test` 绿色成功） | ✅ 已采集 |
+| `10-grafana-dashboard.png` | **自建业务总览看板全貌**（含浏览器地址栏）：QPS / P95 / 5xx / 响应码 / 重启 / CPU / 内存 / 日志 8 块面板全部出数，可见 15:00 与 15:25 两次流量尖峰 | ✅ 已采集 |
+| `11-grafana-pod-metrics.png` | 看板下半部分：Pod 重启次数 / Pod CPU 使用率 / Pod 内存（working set）曲线 | ✅ 已采集 |
+| `12-loki-logs.png` | Explore 中数据源选 Loki（**Code 模式**），查询 `{namespace="boutique"}`：日志流 + Logs volume 直方图 + 左侧字段面板可见 namespace / app / pod / container 等标签 | ✅ 已采集 |
 
 > **编号说明（2026-09-13 修正）**：本节此前误用了 `08`，与 S2 的 `08-traefik-dashboard.png`
 > 冲突。截图为线性编号，跨阶段不重号，故本阶段顺延为 `09-12`，后续阶段同步顺延。
