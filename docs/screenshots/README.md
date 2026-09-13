@@ -70,23 +70,34 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `13-alert-rule-fired.png` | Prometheus → Alerts 页面，`DeploymentReplicasUnavailable` 状态为 **FIRING**（截图要带上浏览器地址栏，证明是本集群的 Prometheus） | 待采集 |
-| `14-alert-email.png` | 邮箱收到的告警邮件（**必须能看到收件时间**，它是「故障→触达」秒数的证据） | 待采集 |
-| `15-alert-dingtalk.png` | 钉钉机器人收到的告警（**带上消息时间戳**） | 待采集 |
-| `16-alert-recovered.png` | 恢复通知（邮件或钉钉任一即可，证明闭环） | 待采集 |
+| `13-alert-rule-fired.png` | Prometheus → Alerts 页面，`DeploymentReplicasUnavailable` 状态为 **FIRING**（截图要带上浏览器地址栏，证明是本集群的 Prometheus） | ⬜ **待采集（本阶段唯一还缺的一张）** |
+| `14-alert-email.png` | 邮箱收到的告警邮件（**必须能看到收件时间**，它是「故障→触达」秒数的证据） | ✅ 已采集（2026-09-13 20:02 那封 `[FIRING:1] DeploymentReplicasUnavailable`） |
+| `15-alert-dingtalk.png` | 钉钉机器人收到的告警（**带上消息时间戳**） | ✅ 已采集（**一张图同时含 FIRING 与 RESOLVED 两张卡片**） |
+| `16-alert-recovered.png` | 恢复通知（邮件或钉钉任一即可，证明闭环） | ✅ 已采集（2026-09-13 20:05 的 `[RESOLVED]` 邮件，绿色横幅） |
 
 > **主验收告警是 `DeploymentReplicasUnavailable`，不是 `IngressHighErrorRate`**。
-> 前者 `for: 1m`、故障后约 90 秒触达；后者要 `for: 5m` + 5 分钟速率窗口，
+> 前者 `for: 1m`，本次实测 **T+70s** 触发；后者要 `for: 5m` + 5 分钟速率窗口，
 > 本次演练（故障约 150 秒）**不会**触发。别在告警列表里干等它。
 > 完整时间预算见 `docs/alerting.md` §3。
 >
-> 采集建议：用 `bash scripts/alert-drill.sh --hold 150` 跑演练，脚本会打印
-> 时间线与各通道发送计数增量；截图时把脚本输出也一并截进去，
-> 这样 `13` 的图里同时有「告警 FIRING」和「故障注入时刻」，证据链更完整。
+> **本次实测时间线**（2026-09-13 20:00:53 注入故障）：
+> Pending **+9s** → Firing **+70s** → Alertmanager 收到 **+70s** →
+> 邮件/钉钉投递 **≈+75s** → 恢复 +220s → Resolved **+250s**。
+> 每个数字的取值方法与回填表见 `docs/alerting.md` §4。
 >
-> 另：`14`/`15` 两张图的时间戳要能和脚本输出的 `T_FAULT` 对上——
-> 面试时被追问「这个 90 秒怎么来的」，两张图加一行脚本输出就能自证。
-
+> **收件人界面有两个坑（都实测踩到，别拿它当秒级证据）：**
+> · 邮箱只显示到**分钟**，没有秒；
+> · 钉钉把**间隔 <5 分钟**的推送合并进**同一个时间分隔**，于是 `15` 那张图里
+>   FIRING（20:02）与 RESOLVED（20:05）看起来像同一时刻发的。
+>
+> 要精确秒数就跑 `bash scripts/alert-drill.sh --report`（只读，从 Alertmanager
+> 日志取 `msg="Notify success"` 的时刻），方法见 `docs/alerting.md` §4.0。
+>
+> **两个小提醒**：
+> ① `14` 的截图含浏览器其余标签页（云控制台、学习页面等），仓库若要公开，
+>    建议裁掉浏览器 chrome 只留邮件内容——更干净，也不泄露无关浏览信息；
+> ② `13` 截图时把 `alert-drill.log` 的时间线几行放进同一画面，面试被追问
+>    「这个 70 秒怎么来的」时，图里就有「故障注入」与「Firing」两个锚点自证。
 
 ### S5 压测与 HPA（任务 8）
 

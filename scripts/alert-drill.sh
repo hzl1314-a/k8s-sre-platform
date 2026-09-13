@@ -10,14 +10,17 @@
 #   2. 通过 port-forward 连上 Prometheus / Alertmanager API
 #   3. 注入故障（把 frontend 副本缩到 0）
 #   4. 轮询并记录：Pending 时刻、Firing 时刻、Alertmanager 收到时刻
-#   5. 记录 Alertmanager 各通道的**发送计数增量**（证明邮件与钉钉真的发出去了）
+#   5. 记录 Alertmanager 各通道的**投递计数增量**（证明邮件与钉钉真的发出去了）
 #   6. 恢复副本，等待并记录 Resolved 时刻
-#   7. 输出时间线表 + 关键 KPI（故障→触达秒数）
+#   7. 等恢复通知投递完成后取增量，逐通道判定「发了 / 没发」
+#   8. 从 Alertmanager 日志抓出每个通道的**精确投递时刻**（秒级），并算「距故障 N 秒」
+#   9. 输出时间线表 + 关键 KPI
 #
 # 用法（在 k8s-cp 上执行）：
 #   bash ~/alert-drill.sh
 #   bash ~/alert-drill.sh --hold 180 --out task7-drill.log
 #   bash ~/alert-drill.sh --alert IngressHighErrorRate       # 换一条告警演练
+#   bash ~/alert-drill.sh --report                           # 只回填投递时间线，不注入故障
 #
 # 为什么必须在 k8s-cp（Linux）上跑，不要在本机 Windows 上跑：
 #   ① NodePort 在每个节点都监听，cp 上访问 127.0.0.1:30080 与外部走同一条
@@ -25,10 +28,14 @@
 #   ② Windows Git Bash 下每次 curl 启动开销 2~3 秒，脚本会反复 curl，
 #      轮询精度会碎掉（这个坑在故障演练文档里已记录）。
 #
-# 手工补充项（脚本无法代劳）：
-#   * 邮箱里那封告警邮件的**到达时间**（右键 → 显示原始邮件，看 Date 头）
-#   * 钉钉消息的发送时间戳
-#   两处填进脚本输出末尾的「手工填写」表，就是截图 13-16 的对应证据。
+# 关于「投递时刻」怎么取（这一步以前靠手工，现在脚本自动完成）：
+#   Alertmanager 每成功投递一次通知都会打一行日志（ts 为 **UTC**）：
+#     ts=... level=info component=dispatcher integration=email[0] msg="Notify success" ...
+#   这是比翻邮箱 / 钉钉 UI 更可靠的证据，原因是收件人侧的两个坑：
+#     · 邮箱客户端只把时间显示到「分钟」，没有秒；
+#     · 钉钉会把间隔小于 5 分钟的消息合并到**同一个时间分隔**下，
+#       于是 FIRING（20:02）与 RESOLVED（20:05）看起来像同一时刻发的。
+#   脚本在 [8/8] 段直接把 integration × 时刻 × 距故障秒数打出来，用于回填文档。
 #
 # 退出码：0 全部符合预期；1 依赖缺失；2 未在预期时间内观测到告警/恢复
 # =============================================================================
@@ -47,15 +54,21 @@ AM_PORT=19093
 HOLD=120              # 注入故障后保持多少秒（留出邮件/钉钉到达与截图的时间）
 TIMEOUT_FIRING=300    # 等待告警 Firing 的上限
 TIMEOUT_RESOLVED=300  # 等待告警 Resolved 的上限
+TIMEOUT_NOTIFY=90     # 等待「恢复通知」投递完成的上限（见 [7/8] 段说明）
 OUT="alert-drill.log"
+REPORT=0              # --report：只回填投递时间线，不注入故障
+RESTORE_REPLICAS=2    # 演练结束后要恢复到的副本数；[1/8] 段会按读取到的真实值覆盖
+                      # （不要写死 2：万一基线是 3 副本，恢复成 2 就把集群改坏了）
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --alert) ALERT_NAME="$2";   shift 2 ;;
-    --hold)  HOLD="$2";         shift 2 ;;
-    --out)   OUT="$2";          shift 2 ;;
+    --alert)  ALERT_NAME="$2";   shift 2 ;;
+    --hold)   HOLD="$2";         shift 2 ;;
+    --out)    OUT="$2";          shift 2 ;;
+    --report) REPORT=1;          shift ;;
     -h|--help)
-      sed -n '2,45p' "$0"; exit 0 ;;
+      # 打印文件顶部的注释块（遇到第一条非注释行就停）
+      awk 'NR>1 && $0 !~ /^#/ {exit} NR>1 {print}' "$0"; exit 0 ;;
     *) echo "未知参数: $1" >&2; exit 1 ;;
   esac
 done
@@ -89,6 +102,58 @@ notif_snapshot() {
   | jq -r '.data.result[]? | "\(.metric.integration) \(.value[1])"' | sort
 }
 
+# 从快照里取某个 integration 的计数（不存在则为 0）
+snap_get() {
+  printf '%s\n' "$1" | awk -v k="$2" '$1==k {printf "%d", $2+0; f=1} END {if (!f) print 0}'
+}
+
+# ------------------------ Alertmanager 投递时间线 ----------------------------
+# 为什么不信收件人界面（两个坑，本机实测）：
+#   · 邮箱客户端的时间只精确到分钟；
+#   · 钉钉会把间隔 <5 分钟的消息合并进同一个时间分隔，看起来像同一时刻发的。
+# Alertmanager 自己的日志才有秒级/毫秒级证据（ts 为 UTC，换算成本机时区后打印）。
+am_pod() {
+  local p
+  p=$(kubectl -n "$NS_MON" get pods -l app.kubernetes.io/name=alertmanager -o name 2>/dev/null | head -1)
+  if [[ -z "$p" ]]; then
+    # 兜底：Operator 生成的 Pod 名形如 alertmanager-<CR 名>-0
+    p=$(kubectl -n "$NS_MON" get pods -o name 2>/dev/null | grep '/alertmanager-' | head -1)
+  fi
+  printf '%s' "$p"
+}
+
+# 取 [since, now] 窗口内的成功投递记录，输出 "integration <utc-ts>"，按时间排序
+am_notify_success() {
+  local since="$1" pod window lines
+  pod=$(am_pod)
+  [[ -z "$pod" ]] && return 0
+  window=$(( $(now) - since + 60 ))
+  lines=$(kubectl -n "$NS_MON" logs "$pod" --since="${window}s" --tail=-1 2>/dev/null) || return 0
+  printf '%s\n' "$lines" \
+    | grep 'Notify success' \
+    | sed -n 's/.*ts=\([^ ]*\).*integration=\([a-zA-Z0-9_]*\).*/\2 \1/p' \
+    | sort -k2
+}
+
+# 打印投递时间线：时刻 / 通道 / 距故障秒数
+print_notify_timeline() {
+  local t0="$1" rows ep skipped=0
+  rows=$(am_notify_success "$t0")
+  if [[ -z "$rows" ]]; then
+    echo "      （未取到投递记录：日志可能已轮转，或该窗口内没有成功投递）"
+    return 0
+  fi
+  echo "      时刻(CST)  通道      距故障"
+  while read -r integ iso; do
+    ep=$(date -d "$iso" +%s 2>/dev/null) || continue
+    # 早于时间基准的记录属于上一场演练（--since 窗口的边界效应），跳过，免得算出负数
+    if [[ $ep -lt $t0 ]]; then skipped=$(( skipped + 1 )); continue; fi
+    printf "      %s   %-9s +%ss\n" "$(date -d "@$ep" +%H:%M:%S)" "$integ" "$(( ep - t0 ))"
+  done <<<"$rows"
+  [[ $skipped -gt 0 ]] && echo "      （已跳过 ${skipped} 条早于本次故障的记录，属上一场演练）"
+  return 0
+}
+
 # 查某个告警当前状态：firing / pending / absent
 alert_state() {
   curl -s -m 10 "http://127.0.0.1:${PROM_PORT}/api/v1/alerts" \
@@ -103,17 +168,26 @@ am_has_alert() {
       '[.[] | select(.labels.alertname == $a)] | length'
 }
 
+CLEANED=0
 cleanup() {
   local rc=$?
+  # TERM/INT trap 里调 exit 会再触发一次 EXIT trap，收尾会跑两遍
+  # （表现为打印两段「—— 收尾 ——」）。用一个标志位挡住。
+  [[ "$CLEANED" == "1" ]] && exit "$rc"
+  CLEANED=1
   echo
   echo "—— 收尾 ——"
   # 关键安全动作：任何异常退出（含 Ctrl+C）都必须把副本恢复，否则集群一直少一半容量
   local cur
   cur=$(kubectl -n "$NS_APP" get deploy "$DEPLOY" -o jsonpath='{.spec.replicas}' 2>/dev/null)
-  if [[ "${cur:-0}" == "0" ]]; then
-    echo "检测到 $DEPLOY 副本为 0，自动恢复为 2"
-    kubectl -n "$NS_APP" scale deploy/"$DEPLOY" --replicas=2
-    log "auto-restore" "异常退出后自动恢复副本为 2"
+  # ★ 只在**确实读到 0** 时才恢复。
+  #   写成 ${cur:-0} 是个陷阱：kubectl 失败时 cur 为空 → 被当成 0 → 脚本会
+  #   在一个本来正常的集群上做一次 scale，把副本数从真实值改成 2。
+  #   对收尾这种「失败后仍会执行」的路径，宁可不动作，也不能基于读失败做变更。
+  if [[ "$cur" == "0" ]]; then
+    echo "检测到 $DEPLOY 副本为 0，自动恢复为 ${RESTORE_REPLICAS}"
+    kubectl -n "$NS_APP" scale deploy/"$DEPLOY" --replicas="$RESTORE_REPLICAS"
+    log "auto-restore" "异常退出后自动恢复副本为 ${RESTORE_REPLICAS}"
   fi
   [[ -n "${PF_PROM_PID:-}" ]] && kill "$PF_PROM_PID" 2>/dev/null
   [[ -n "${PF_AM_PID:-}"   ]] && kill "$PF_AM_PID"   2>/dev/null
@@ -126,11 +200,38 @@ need kubectl
 need curl
 need jq
 
+# ---------------------- --report：只回填投递时间线 ---------------------------
+# 用途：一场演练已经做完（或忘了记数字）时，补录「故障 → 各通道投递」的精确秒数。
+# 只读：从 $OUT 读出那次的故障注入时刻当基准，再去 Alertmanager 日志取投递记录，
+# 不注入故障、不改集群任何状态。日志轮转后可能取不到，所以趁早跑。
+if [[ "$REPORT" == "1" ]]; then
+  T_FAULT_H=$(awk -F'\t' '$2=="fault-injected" {print $1}' "$OUT" 2>/dev/null | tail -1)
+  if [[ -z "$T_FAULT_H" ]]; then
+    echo "[错误] 在 ${OUT} 里找不到 fault-injected 记录，无法确定时间基准。" >&2
+    echo "       指定别的日志：bash $0 --report --out <文件>" >&2
+    exit 1
+  fi
+  T0=$(date -d "$T_FAULT_H" +%s 2>/dev/null) || { echo "[错误] 无法解析时间: ${T_FAULT_H}" >&2; exit 1; }
+  echo "=============================================================="
+  echo " 任务 7 投递时间线回填（--report，只读，不注入故障）"
+  echo "--------------------------------------------------------------"
+  echo " 时间基准 : ${T_FAULT_H}"
+  echo "            （来自 ${OUT} 的 fault-injected 记录）"
+  echo "=============================================================="
+  echo
+  print_notify_timeline "$T0"
+  echo
+  echo " 取 email / webhook 各自第一条的 +Ns，即为"
+  echo " 「故障 → 该通道投递成功」的秒数（验收线 ≤120s）。"
+  echo
+  exit 0
+fi
+
 echo "=============================================================="
 echo " 任务 7 告警链路演练"
 echo "--------------------------------------------------------------"
 echo " 目标告警 : ${ALERT_NAME}"
-echo " 故障方式 : ${NS_APP}/${DEPLOY} 副本 scale 到 0，保持 ${HOLD}s 后恢复为 2"
+echo " 故障方式 : ${NS_APP}/${DEPLOY} 副本 scale 到 0，保持 ${HOLD}s 后恢复原副本数"
 echo " 日志文件 : ${OUT}"
 echo "=============================================================="
 echo
@@ -138,15 +239,21 @@ echo
 : > "$OUT"
 log "start" "drill begin, alert=${ALERT_NAME}, hold=${HOLD}s"
 
-echo "[1/7] 前置检查"
+echo "[1/8] 前置检查"
 kubectl get ns "$NS_APP" >/dev/null 2>&1 || { echo "[错误] 命名空间 $NS_APP 不存在" >&2; exit 1; }
 kubectl -n "$NS_APP" get deploy "$DEPLOY" >/dev/null 2>&1 || { echo "[错误] Deployment $NS_APP/$DEPLOY 不存在" >&2; exit 1; }
 
-ORIG_REPLICAS=$(kubectl -n "$NS_APP" get deploy "$DEPLOY" -o jsonpath='{.spec.replicas}')
-echo "      $DEPLOY 当前副本数 = ${ORIG_REPLICAS}"
-if [[ "${ORIG_REPLICAS:-0}" -lt 2 ]]; then
-  echo "      ⚠️ 副本数 < 2，恢复阶段将设回 2。演练前建议先确认基线。"
+ORIG_REPLICAS=$(kubectl -n "$NS_APP" get deploy "$DEPLOY" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+echo "      $DEPLOY 当前副本数 = ${ORIG_REPLICAS:-<读取失败>}"
+# 恢复目标取「演练前的真实值」，而不是写死 2。
+# 读不到/读到非数字时退回 2，并明确提示，避免悄悄改坏基线。
+if [[ "${ORIG_REPLICAS:-}" =~ ^[0-9]+$ ]] && (( ORIG_REPLICAS >= 1 )); then
+  RESTORE_REPLICAS="$ORIG_REPLICAS"
+else
+  RESTORE_REPLICAS=2
+  echo "      ⚠️ 副本数读取异常（'${ORIG_REPLICAS:-}'），恢复阶段按 2 处理；演练前建议先确认基线"
 fi
+echo "      （演练结束后将恢复为 ${RESTORE_REPLICAS} 副本）"
 
 echo "      检查监控栈 Pod..."
 kubectl -n "$NS_MON" get deploy "$PROM_SVC"   >/dev/null 2>&1 \
@@ -162,7 +269,7 @@ log "preflight" "orig_replicas=${ORIG_REPLICAS}"
 
 # ---------------------------- 1. 打通 API -----------------------------------
 echo
-echo "[2/7] 建立 port-forward（Prometheus :${PROM_PORT}, Alertmanager :${AM_PORT}）"
+echo "[2/8] 建立 port-forward（Prometheus :${PROM_PORT}, Alertmanager :${AM_PORT}）"
 kubectl -n "$NS_MON" port-forward "svc/${PROM_SVC}" "${PROM_PORT}:9090" >/dev/null 2>&1 &
 PF_PROM_PID=$!
 kubectl -n "$NS_MON" port-forward "svc/${AM_SVC}"   "${AM_PORT}:9093"   >/dev/null 2>&1 &
@@ -187,14 +294,14 @@ printf '%s\n' "$BASE_TOTAL" | sed 's/^/        /' | grep . || echo "        （�
 
 # ---------------------------- 2. 注入故障 -----------------------------------
 echo
-echo "[3/7] 注入故障：scale ${DEPLOY} → 0"
+echo "[3/8] 注入故障：scale ${DEPLOY} → 0"
 T_FAULT=$(now)
 log "fault-injected" "scale ${NS_APP}/${DEPLOY} to 0"
 kubectl -n "$NS_APP" scale deploy/"$DEPLOY" --replicas=0 | sed 's/^/      /'
 
 # ---------------------------- 3. 等 Firing ----------------------------------
 echo
-echo "[4/7] 轮询告警状态（Pending → Firing，上限 ${TIMEOUT_FIRING}s）"
+echo "[4/8] 轮询告警状态（Pending → Firing，上限 ${TIMEOUT_FIRING}s）"
 echo "      提示：此时可以打开 Grafana 看板、留意邮箱与钉钉"
 T_PENDING=""; T_FIRING=""; T_AM_RECV=""
 DEADLINE=$(( $(now) + TIMEOUT_FIRING ))
@@ -239,19 +346,19 @@ for _ in $(seq 1 20); do
 done
 
 echo
-echo "      >>> 请现在核对邮箱与钉钉，记录到达时间（脚本结束时填写）<<<"
+echo "      >>> 现在去邮箱和钉钉截图留证（数字不用记，脚本结束会自动给出）<<<"
 echo "      保持故障 ${HOLD}s，为通知到达与截图留时间..."
 sleep "$HOLD"
 
 # ---------------------------- 4. 恢复 ---------------------------------------
 echo
-echo "[5/7] 恢复：scale ${DEPLOY} → 2"
+echo "[5/8] 恢复：scale ${DEPLOY} → ${RESTORE_REPLICAS}"
 T_RESTORE=$(now)
-log "fault-cleared" "scale ${NS_APP}/${DEPLOY} back to 2"
-kubectl -n "$NS_APP" scale deploy/"$DEPLOY" --replicas=2 | sed 's/^/      /'
+log "fault-cleared" "scale ${NS_APP}/${DEPLOY} back to ${RESTORE_REPLICAS}"
+kubectl -n "$NS_APP" scale deploy/"$DEPLOY" --replicas="$RESTORE_REPLICAS" | sed 's/^/      /'
 
 echo
-echo "[6/7] 等待告警 Resolved（上限 ${TIMEOUT_RESOLVED}s）"
+echo "[6/8] 等待告警 Resolved（上限 ${TIMEOUT_RESOLVED}s）"
 T_RESOLVED=""
 DEADLINE=$(( $(now) + TIMEOUT_RESOLVED ))
 while [[ $(now) -lt $DEADLINE ]]; do
@@ -266,19 +373,56 @@ while [[ $(now) -lt $DEADLINE ]]; do
 done
 [[ -z "$T_RESOLVED" ]] && { echo "      ⚠️ 未在 ${TIMEOUT_RESOLVED}s 内看到恢复（副本可能还没 Ready）"; log "alert-resolved" "TIMEOUT"; }
 
-# ---------------------------- 5. 通道发送增量 --------------------------------
+# ---------------------------- 5. 通道投递计数增量 ----------------------------
 echo
-echo "[7/7] 各通道发送计数增量（证明两个通道都真的发出去了）"
+echo "[7/8] 各通道投递计数（累计值 → 增量）"
+# ★ 这里有个必须等的竞态：Alertmanager 是「先标记 Resolved、再异步投递恢复通知」。
+#   如果一检出 Resolved 就立刻取计数，恢复那条还没发出去 —— 症状是计数只 +1，
+#   看起来像「两个通道只发出去一条」（本机 2026-09-13 现场就是这么被误读的）。
+#   所以先等两个通道都出现增量，再多留 15s 让恢复通知落定。
+WAITED=0
+while [[ $WAITED -lt $TIMEOUT_NOTIFY ]]; do
+  AFTER_TOTAL=$(notif_snapshot)
+  d_e=$(( $(snap_get "$AFTER_TOTAL" email)   - $(snap_get "$BASE_TOTAL" email)   ))
+  d_w=$(( $(snap_get "$AFTER_TOTAL" webhook) - $(snap_get "$BASE_TOTAL" webhook) ))
+  [[ $d_e -ge 1 && $d_w -ge 1 ]] && break
+  sleep 5; WAITED=$(( WAITED + 5 ))
+done
+sleep 15
 AFTER_TOTAL=$(notif_snapshot)
+
+D_EMAIL=$((   $(snap_get "$AFTER_TOTAL" email)   - $(snap_get "$BASE_TOTAL" email)   ))
+D_WEBHOOK=$(( $(snap_get "$AFTER_TOTAL" webhook) - $(snap_get "$BASE_TOTAL" webhook) ))
+
 {
   echo
-  echo "== 通道发送计数增量 =="
-  echo "（来自 alertmanager_notifications_total，按 integration 分组）"
-  echo "演练前："
-  printf '%s\n' "$BASE_TOTAL" | sed 's/^/  /' | grep . || echo "  （空）"
-  echo "演练后："
-  printf '%s\n' "$AFTER_TOTAL" | sed 's/^/  /' | grep . || echo "  （空）"
+  echo "== 通道投递计数增量 =="
+  echo "（alertmanager_notifications_total；本项目只用 email 与 webhook 两个通道，"
+  echo "  正常一次演练各 +2：告警 1 条 + 恢复 1 条）"
+  printf "  %-9s %s → %s   增量 +%s\n" \
+    email   "$(snap_get "$BASE_TOTAL" email)"   "$(snap_get "$AFTER_TOTAL" email)"   "$D_EMAIL"
+  printf "  %-9s %s → %s   增量 +%s\n" \
+    webhook "$(snap_get "$BASE_TOTAL" webhook)" "$(snap_get "$AFTER_TOTAL" webhook)" "$D_WEBHOOK"
+  echo
+  echo "  判定："
+  if [[ $D_EMAIL   -ge 1 ]]; then echo "    ✓ 邮件通道已投递（+${D_EMAIL}）"
+  else echo "    ✗ 邮件通道 0 投递 → 查 Alertmanager 日志里 integration=email 的报错"; fi
+  if [[ $D_WEBHOOK -ge 1 ]]; then echo "    ✓ 钉钉通道已投递（+${D_WEBHOOK}）"
+  else echo "    ✗ 钉钉通道 0 投递 → kubectl -n monitoring logs deploy/prometheus-webhook-dingtalk --tail=50"; fi
+  echo
+  echo "  完整快照（演练前 / 演练后）"
+  printf '%s\n' "$BASE_TOTAL"  | sed 's/^/    前 /' | grep . || echo "    前 （空）"
+  printf '%s\n' "$AFTER_TOTAL" | sed 's/^/    后 /' | grep . || echo "    后 （空）"
 } | tee -a "$OUT"
+
+# ---------------------------- 6. 精确投递时刻 --------------------------------
+echo
+echo "[8/8] 精确投递时刻（Alertmanager 日志，秒级 —— 回填文档就用这个数字）"
+print_notify_timeline "$T_FAULT"
+echo "      说明：这是 Alertmanager 把通知交给邮件服务器 / 转发组件的时刻"
+echo "            （日志 ts 为 UTC，已换算本机时区）。收件人侧通常再晚 1~5 秒。"
+echo "            邮箱没有秒、钉钉会把 5 分钟内的消息合并成一个时间分隔，"
+echo "            所以不要用它们的界面时间去填表格。"
 
 # ---------------------------- 6. 汇报 ---------------------------------------
 echo
@@ -298,11 +442,18 @@ echo "         才真正发出，所以「故障 → 收件人收到」通常比
 echo "         验收标准是「≤ 120 秒」，只要邮件/钉钉到达时间减 T_FAULT ≤ 120 即通过。"
 echo "=============================================================="
 echo
-echo " —— 手工填写（脚本无法代劳，填完就是 README/简历的数字来源）——"
-echo "   邮箱告警到达时间   : ______  （→ 距故障 ______ 秒）"
-echo "   钉钉告警到达时间   : ______  （→ 距故障 ______ 秒）"
-echo "   邮箱恢复通知时间   : ______"
-echo "   钉钉恢复通知时间   : ______"
+echo " —— 回填 docs/alerting.md §4 的数字 ——"
+echo "   权威来源：上面 [8/8] 段「精确投递时刻」"
+echo "     · 故障 → 邮件投递 = email   第一条的 +Ns"
+echo "     · 故障 → 钉钉投递 = webhook 第一条的 +Ns（验收线 ≤120s）"
+echo "   若日志已轮转取不到，用只读回填模式（不注入故障）："
+echo "     bash ~/alert-drill.sh --report"
+echo
+echo "   收件人侧二次确认（可选，不算 KPI）："
+echo "     · 邮箱：右键邮件 → 显示原始邮件 → Date 头（有秒）"
+echo "     · 钉钉：悬停消息看发送时间"
+echo "       ⚠️ 间隔 <5 分钟的多条消息会被合并到同一个时间分隔下，"
+echo "          看起来像同一时刻发的 —— 别据此判断投递时刻"
 echo
 echo " 截图对应（docs/screenshots/README.md S4 段）："
 echo "   13-alert-rule-fired.png  Prometheus → Alerts 页面，${ALERT_NAME} 为 FIRING"

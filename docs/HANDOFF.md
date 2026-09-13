@@ -30,7 +30,7 @@
 | 4 | Online Boutique 上线（22 Pod、副本 2、反亲和） | ✅ |
 | 5 | Traefik Ingress + NodePort 暴露（30080/30443/30800） | ✅ |
 | 6 | 可观测性（kube-prometheus-stack + Loki + Promtail + 自建看板） | ✅ |
-| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟨 **已上云；邮件通道通、钉钉待定位**（`docs/alerting.md`） |
+| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟩 **已完成**：双通道实测均投递成功（T+70s 触发、≈+75s 投递），时间线见 `docs/alerting.md` §4；仅截图 `13` 待补 |
 | 8 | metrics-server + HPA 自动扩缩容 + hey 压测 | ⬜ |
 | 9 | 故障演练（drain 优雅排水 / 硬宕机） | ⬜ |
 | 10 | README 收口 + 简历定稿 | ⬜ |
@@ -174,6 +174,8 @@ k8s-sre-platform/
 | 10 | **apply 完立刻断言「没生效」必然误报** | Operator 写规则文件 + config-reloader 触发 reload + Prometheus 重读，官方预期**最长 1 分钟**；生成 Alertmanager 配置同理。校验脚本必须轮询等待，不要 apply 后 sleep 5 就判定 |
 | 11 | **要不要通知 ≠ 规则要不要触发** | 用 Alertmanager 的路由表达「谁该收到什么」，别去删规则。例：`severity = none` 的元告警（InfoInhibitor）在收口路由下会污染收件箱，正确做法是加一条 `→ receiver discard` 的路由（空接收器即官方支持的丢弃写法），而不是关掉整组规则（`general.rules` 里还有 TargetDown） |
 | 12 | **AlertmanagerConfig 与告警不在同一命名空间 = 一条通知都发不出** | Operator 的 `alertmanagerConfigMatcherStrategy.type` **默认 `OnNamespace`**，会给 AlertmanagerConfig 里**每条路由**追加 `namespace = <配置所在命名空间>`（源码 `pkg/alertmanager/amcfg.go` 的 `namespaceEnforcer.processRoute`）。我们的配置在 `monitoring`、业务告警在 `boutique` → 业务告警全被丢到默认 `null` 接收器。**症状极迷惑**：Prometheus 里告警正常 FIRING、Alertmanager 也收到了，就是不发通知；唯一收到的那封邮件偏偏是 `monitoring` 命名空间的 InfoInhibitor。修法：values 里设 `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace`（本项目选它而非 `None`：配置住在 Alertmanager 自己的命名空间，该策略语义正是「身边的配置=集群级策略」，且保留了对其它命名空间的默认保护），然后 `helm upgrade` |
+| 13 | **别拿收件人界面当秒级证据**：邮箱只显示到分钟；钉钉把间隔 <5 分钟的推送合并进同一个时间分隔（FIRING 20:02 与 RESOLVED 20:05 看着像同一时刻发的） | 改从 Alertmanager 日志取投递记录对时间 | 收件人客户端的显示策略，与投递是否正常无关 | 统一用 `alert-drill.sh --report`：读日志里 `msg="Notify success"` 的 `ts`（UTC→本机时区）算出「距故障 N 秒」，并自动跳过早于基准的上一场记录 |
+| 14 | **收尾/恢复路径宁可不动，也不能基于「读失败」做变更**：用 `${cur:-0}` 判副本数时，`kubectl` 读失败会让空值被当成 `0`，脚本于是在**正常集群上执行 scale、把副本数改成 2**；同理恢复目标写死 `--replicas=2` 时，基线是 3 副本的集群会被改坏 | 桩命令让 `kubectl get deploy` 返回空，观察收尾动作 | `${var:-0}` 把「读失败」与「真的是 0」混为一谈。演练脚本会改集群状态，这类路径只允许在**确认**之后才动作 | 判定改成 `[[ "$cur" == "0" ]]`；恢复目标改用读到的**演练前真实副本数**（`RESTORE_REPLICAS`），读不到才退回 2 并显式告警 |
 
 ### 5.4 工具使用类（给「人」的提醒）
 
@@ -190,80 +192,67 @@ k8s-sre-platform/
 | 9 | **自定义资源的字段错误不会报错**，会被 CRD **静默裁剪**。上手写任何 `PrometheusRule` / `AlertmanagerConfig` / `ServiceMonitor` 之前，先用 `scripts/validate-crd-fields.py` 过一遍（本地就能跑，见 `docs/alerting.md` §3 第 3 步） |
 | 10 | **脚本被工具写成 CRLF → Linux 上解析期直接崩**。症状：`line 18: $'\r': command not found`、`: invalid option nameline 19: set: pipefail`、`syntax error near unexpected token \`$'in\r'\``。**不是第一行报错、也完全不像行尾符问题**，极易误判成脚本写坏了。Windows 侧一切正常（Git Bash 容忍 CRLF、`bash -n` 也过） | scp 前自检：`grep -lU $'\r' scripts/*.sh`；命中就 `sed -i 's/\r$//' <文件>`。注意 `.gitattributes` 只在 add/checkout 规范化，**挡不住工具往工作区写 CRLF**，而 scp 传的是工作区文件 |
 | 11 | **读第三方 API 前先核对 OpenAPI**。实例：以为 Alertmanager 的 `/api/v2/status` 有 `configYAML`，实际**没有这个字段**，写它会静默拿到 `null`（不报错），导致验收项连续空转 | 正确路径是 `.config.original`。核对方式：读上游仓库的 `api/v2/openapi.yaml`，别按记忆写字段名 |
+| 12 | **同一条消息里对同一个文件并发做多次编辑会丢掉改动**：本次给 `alert-drill.sh` 加参数时，同批的两处编辑只落盘了一处（工具回「成功」但文件里没有），直到桩测试报出 `REPORT: unbound variable` 才暴露 | 一次性用脚本改完 + 逐条断言，改完回读文件确认 | 每次编辑都基于同一份原始内容「读-改-写」，后写的覆盖先写的 | 同一文件的多处改动合并成**一次原子操作**（本仓库用 python 改写 + `assert s.count(old)==1`）。**不要相信「成功」提示，要回读验证** |
 
 ---
 
 ## 六、下一步怎么走
 
-### 任务 7：告警双通道（配置已就绪，只差两个凭据）
+### 任务 7：告警双通道（✅ 2026-09-13 已完成并实测验收）
 
-> ★ **执行手册：`docs/alerting.md`（S4 阶段完整步骤，含时间预算表、排障分段定位、面试要点）**
-> 交接文档这里只留摘要；手册里的内容在 2026-09-13 已按实测逐条核对并修正。
+> ★ **执行手册：`docs/alerting.md`（S4 完整步骤，含时间预算表、排障分段定位、面试要点）**
+> 交接文档这里只留摘要；手册内容已按两次真实演练逐条核对并修正。
 
-**前置（✅ 2026-09-13 已完成）**：
-1. QQ 邮箱 SMTP 授权码 —— 已获取，并在**本机验证 SMTP 登录成功**（465 隐式 TLS）
-2. 钉钉机器人 webhook + 加签 secret —— 已获取，并在本机**实发一条消息，返回 `errcode:0`**
+**结果**：邮箱与钉钉两个通道均**实测投递成功**（截图 14/15/16 佐证），
+验收 KPI「故障 → 触达」落在 120 秒线内。
 
-> 两个凭据只存在于**两处不会进 git 的地方**：本机 `downloads/secrets/dingtalk-config.yml`
-> （命中 `.gitignore` 的 `downloads/*` 与 `dingtalk-config.yml` 两条规则，已用
-> `git check-ignore -v` 验过）与集群内的 Secret。
-> 想确认仓库里没有明文凭据：`git grep -n -I 'SEC3\|access_token=8bf' HEAD` 应无输出。
+**两次演练对比（本任务最有价值的一段证据）**：
 
-**执行（一条命令，或手工 5 步——手册里有逐条原理）**：
-1. 本机上传 + 在 cp 上跑 `bash ~/deploy-task7.sh`
-   （脚本逐步执行并**当场验收 4 项**：规则已加载 / 路由已合并 / 转发组件在跑 / Prometheus 认到 Alertmanager）
-   scp 清单见 `docs/alerting.md` §3.5
-2. 触发演练：`bash scripts/alert-drill.sh --hold 150`（自动记录时间线 + 各通道发送计数增量）
-3. 留证：截图 13-16，时间线回填 `docs/alerting.md` §4
+| 观测点 | 17:24 第一次 | 20:00 第二次（修复后） |
+|---|---|---|
+| 告警 Pending | T+21s | T+9s |
+| **告警 Firing** | T+82s | **T+70s** |
+| Alertmanager 收到 | T+82s | T+70s |
+| 通道计数增量 | `email` 0→1，**`webhook` 0→0** ⚠️ | `email` +1、`webhook` **+1**（钉钉首次真正发出） |
+| 收件人实际结果 | 只收到一封 InfoInhibitor 噪声 | 邮件 20:02 / 钉钉 20:02；恢复通知 20:05 **两条都到** |
 
-**验收**：故障到告警 ≤2 分钟（预计 95~110 秒，推理见手册 §3）。
-**主验收告警是 `DeploymentReplicasUnavailable`（`for: 1m`）**，
-不是 `IngressHighErrorRate`（它要 `for: 5m`，本次演练不会触发）。
+**第一次「一条通知都不发」的根因**（详见 §5.3 第 12 条）：
+Operator 的 `alertmanagerConfigMatcherStrategy` **默认 `OnNamespace`**，会给
+AlertmanagerConfig 的每条路由强制追加 `namespace = monitoring` → `boutique` 的业务告警
+一条都匹配不上，全被丢到默认 `null` 接收器。
+唯一收到的那封 InfoInhibitor 邮件恰好是 `monitoring` 命名空间的——**这条「奇怪的噪声」就是定位线索**。
+
+**让本任务真正落地的三件事（都已进仓库）**：
+
+1. `monitoring/kube-prometheus-stack-values.yaml` 设
+   `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace`
+   （保留默认保护、不用 `None`；改动已本地 `helm template` 验证字段确实落到 Alertmanager 对象上）
+2. 清掉 values 里 5 个**死配置键**（chart 90.1.1 中不存在、helm 静默忽略），
+   并在路由层加 `severity = none → receiver discard` 收口元告警
+3. `scripts/alert-drill.sh` 补上**精确投递时刻**采集（见下）
+
+**时间线与投递时刻怎么记（本次新加，往后不用再手工掐表）**：
+
+```bash
+bash ~/alert-drill.sh --hold 150     # 跑演练：自动记时间线 + 逐通道投递判定
+bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取精确到秒的投递时刻
+```
+
+**为什么不看收件人界面**（实测踩到，详见 §5.3 第 13 条）：邮箱只显示到分钟；
+钉钉会把间隔 <5 分钟的消息合并进同一个时间分隔，于是 FIRING 与 RESOLVED 看起来像
+同一时刻发的。权威来源是 Alertmanager 日志里的 `msg="Notify success"`。
+
+**剩余事项**：
+
+- 截图 `13-alert-rule-fired.png` 待补（Prometheus → Alerts 页面显示 FIRING，带地址栏）。
+  14/15/16 已归档到 `docs/screenshots/`。
+- 用 `--report` 把 `docs/alerting.md` §4 里两组标「≈」的投递秒数换成实测值。
 
 > ⚠️ **原交接内容有 4 处已修正，不要再按旧版执行**（详见手册 §6）：
 > 1. 钉钉的 Helm chart 已从 prometheus-community **下架**，`helm install` 必然失败 → 改为自维护清单
 > 2. 排查建议里的 `sum by (service)` → 必须用 `exported_service`（标签被改名，见 §5.3 第 6 条）
 > 3. 邮箱配置里的 `headers.Subject` 字段跨版本 schema 不一致且属冗余 → 已删除
 > 4. 转发组件**不暴露 `/metrics`**，不能挂 ServiceMonitor（会造成永久 `up=0` 并触发自检规则）
-
-**2026-09-13 17:24 首次演练实测**（`scripts/alert-drill.sh --hold 150`）：
-
-| 时刻 | 事件 |
-|---|---|
-| T+0s | 注入故障（frontend 副本 → 0） |
-| T+21s | 告警 Pending |
-| **T+82s** | **告警 Firing**（已优于 120 秒验收线） |
-| T+82s | Alertmanager 收到该告警 |
-| T+232s | 恢复副本为 2 |
-| T+262s | 告警 Resolved（距恢复 30 秒） |
-| — | 通道发送计数：`email` 0→1，**`webhook`（钉钉）0→0** ⚠️ |
-
-**卡点根因（已定位，见 §5.3 第 12 条）**：钉钉与邮件**都没收到主告警**，
-原因是 Operator 的 `alertmanagerConfigMatcherStrategy` 默认 `OnNamespace`，
-给我们 AlertmanagerConfig 的每条路由强制追加了 `namespace = monitoring`
-→ `boutique` 的告警一条都匹配不上，全被丢到默认 `null` 接收器。
-唯一收到的那封 InfoInhibitor 邮件恰好是 `monitoring` 命名空间的——这条「奇怪的噪声」正是定位线索。
-
-**需要执行的一步（改 values + upgrade，云上操作由本人做）**：
-
-```bash
-# 本机
-scp monitoring/kube-prometheus-stack-values.yaml root@8.155.129.89:~/
-# cp 上（helm 若未装见 downloads/README.md）
-helm upgrade kube-prometheus-stack ~/kube-prometheus-stack-90.1.1.tgz \
-  -n monitoring -f ~/kube-prometheus-stack-values.yaml
-```
-
-顺带已修掉的两个问题（都会造成误判，详见 §5.3 第 9、10 条与 `docs/alerting.md` §6/§7）：
-values 里 5 个**死配置键**（chart 90.1.1 中不存在，静默忽略）、
-部署脚本验收 1/2 的**检查时机与方法**缺陷（apply 后立刻断言必然误报）。
-
-**下一步**：upgrade 之后重跑
-
-```bash
-bash ~/alert-drill.sh --hold 150     # 看这次邮件与钉钉是否都到
-bash ~/diag-task7.sh                 # 若还有问题，7 段一次取证（含绕过 Prometheus 的端到端注入）
-```
 
 
 ### 任务 8：HPA 与压测

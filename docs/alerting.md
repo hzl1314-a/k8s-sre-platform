@@ -405,29 +405,73 @@ Alertmanager 收到 / 恢复 各时刻 → 打印各通道发送计数增量 →
 
 ## 4. 时间线记录表（演练后回填）
 
-**演练执行时间：** `待填`
+**演练执行时间：** 2026-09-13 20:00:53（Asia/Shanghai，cp 节点时区）
 
-| 时刻 | 事件 | 距故障 |
-|---|---|---|
-| T+0s | `kubectl scale deploy/frontend --replicas=0` | — |
-| T+__s | 告警状态变为 Pending | __s |
-| T+__s | 告警状态变为 **Firing** | __s |
-| T+__s | Alertmanager 收到告警（`/api/v2/alerts` 可见） | __s |
-| T+__s | **邮箱收到告警** | __s |
-| T+__s | **钉钉收到告警** | __s |
-| T+__s | 执行 `--replicas=2` 恢复 | __s |
-| T+__s | 告警 Resolved | __s |
-| T+__s | 收到恢复通知 | __s |
+| 时刻 | 事件 | 距故障 | 证据 |
+|---|---|---|---|
+| T+0s（20:00:53） | `kubectl scale deploy/frontend --replicas=0` | — | `alert-drill.log` |
+| T+9s（20:01:02） | 告警状态变为 Pending | **+9s** | `alert-drill.log` |
+| T+70s（20:02:03） | 告警状态变为 **Firing** | **+70s** | `alert-drill.log` |
+| T+70s（20:02:03） | Alertmanager 收到告警 | **+70s** | `alert-drill.log` |
+| T+75s | **邮件投递** | **≈+75s**（待 4.0 精确化） | 邮箱显示 20:02，仅到分钟 |
+| T+75s | **钉钉投递** | **≈+75s**（待 4.0 精确化） | 钉钉时间分隔 20:02 |
+| T+220s（20:04:33） | 执行恢复（`--replicas=2`） | +220s | `alert-drill.log` |
+| T+250s（20:05:03） | 告警 Resolved | **+250s**（距恢复 30s） | `alert-drill.log` |
+| T+253s | 收到恢复通知（邮件 + 钉钉各一条） | ≈+253s | 邮箱显示 20:05 |
 
-### 通道发送计数（脚本自动采集，证明两通道都真的发了）
+> ⚠️ 标「≈」的两组是**理论值 + 分钟级界面时间**推出来的
+> （Firing 20:02:03 + critical 路由 `groupWait: 5s`），
+> **不是实测秒数**。跑一次 4.0 的 `--report` 就能换成实测值；
+> 拿到实测值之前，这一格不要写成确数。
+
+### 通道投递计数（证明两通道都真的发了）
 
 | integration | 演练前累计 | 演练后累计 | 增量 |
 |---|---|---|---|
-| `email` | | | |
-| `webhook`（钉钉经此发出） | | | |
+| `email` | 17 | 18 | +1 实测 |
+| `webhook`（钉钉经此发出） | 0 | 1 | +1 实测 |
 
-> 这一格是**最硬的证据**：它证明的不是「Prometheus 显示已触发」，
+> 这两格是**最硬的证据**：它证明的不是「Prometheus 显示已触发」，
 > 而是「Alertmanager 真的把通知交付到了两个 integration」。
+>
+> 但注意：正常一次演练应各 **+2**（告警 1 条 + 恢复 1 条）。本次实测只 +1
+> 是因为**旧版脚本在检出 Resolved 后立刻取数，恢复通知还没投递出去**——
+> 这是取数竞态，不是通道故障（详见 §4.3 第 1 条）。新版脚本已修。
+
+### 4.0 把投递时刻精确到秒：一条只读命令
+
+**收件人界面不能当秒级证据**——这是实测踩到的，不是推测：
+
+- 邮箱客户端只把时间显示到**分钟**（`20:02`），没有秒；
+- 钉钉会把**间隔小于 5 分钟**的多条消息合并进**同一个时间分隔**下，于是
+  FIRING（20:02）与 RESOLVED（20:05）看起来像「同一时刻发的」。
+
+权威来源是 Alertmanager 自己的日志：它每成功投递一次都会打一行
+`msg="Notify success"`，带 `integration` 与毫秒级 `ts`（UTC）。
+一条只读命令就能取出来（**不注入故障、不改集群任何状态**）：
+
+```bash
+bash ~/alert-drill.sh --report
+# 想回填别的场次：bash ~/alert-drill.sh --report --out <日志文件>
+```
+
+输出形如（数字为示例，用来说明格式）：
+
+```
+ 时间基准 : 2026-09-13T20:00:53+08:00
+            （来自 alert-drill.log 的 fault-injected 记录）
+      时刻(CST)  通道      距故障
+      20:02:07   email     +74s
+      20:02:08   webhook   +75s
+      20:05:06   email     +253s
+      20:05:06   webhook   +253s
+```
+
+取 `email` 与 `webhook` **各自第一条**的 `+Ns`，就是「故障 → 该通道投递成功」的
+秒数（验收线 ≤120s），直接填进上表。**日志轮转后取不到，所以演练完尽早跑。**
+
+> 脚本也做了边界处理：早于时间基准的记录（属于上一场演练）会被跳过并提示，
+> 不会算出负数。
 
 ### 4.1 每个数字从哪里取（可复现，别凭印象填）
 
@@ -442,8 +486,9 @@ Alertmanager 收到 / 恢复 各时刻 → 打印各通道发送计数增量 →
 | 恢复操作时刻 | `alert-drill.log` | `grep fault-cleared alert-drill.log` |
 | Resolved 时刻 | `alert-drill.log` | `grep alert-resolved alert-drill.log` |
 | 各通道发送计数 | `alert-drill.log` / 脚本结尾 | `grep -A 30 '通道发送计数增量' alert-drill.log` |
-| **邮箱告警到达时刻** | 邮箱（脚本取不到） | 打开那封邮件 → 「显示原始邮件」→ 看 `Date:` 头；或邮件列表里的时间 |
-| **钉钉告警到达时刻** | 钉钉（脚本取不到） | 钉钉消息本身的时间 |
+| **邮件 / 钉钉投递时刻（权威）** | Alertmanager 日志 | `bash ~/alert-drill.sh --report`（见 4.0）。日志行形如 `ts=… integration=email[0] msg="Notify success"` |
+| 邮箱到达时刻（二次确认） | 邮箱 | 右键邮件 → 「显示原始邮件」→ `Date:` 头（**有秒**）。列表里的时间只到分钟 |
+| 钉钉到达时刻（二次确认） | 钉钉 | 悬停消息看发送时间。⚠️ **间隔 <5 分钟的多条消息会被合并进同一个时间分隔**，不要据此判断投递时刻 |
 
 算「距故障多少秒」：
 
@@ -468,6 +513,21 @@ echo $(( $(date -d '2026-09-13T17:24:53+08:00' +%s) - $(date -d '2026-09-13T17:2
 
 > 建议把 `alert-drill.log` 里那几行时间线**一起截进 14/15 的图里**（同一个画面内），
 > 这样「90 秒」不是靠嘴说，而是图里就有「故障注入时刻」和「邮件到达时刻」两个锚点。
+
+### 4.3 三个「看起来像故障」的正常现象（本次演练全部遇到）
+
+第一次看到输出时，下面三条都很容易被误判成「通道坏了」。记下来能省一整轮排查：
+
+| 现象 | 为什么不是故障 |
+|---|---|
+| **计数只 +1**（`email 17→18`、`webhook 0→1`），但邮箱和钉钉里各躺着 **2 条**消息 | **取数竞态**：Alertmanager 是「先标 Resolved、再**异步**投递恢复通知」。脚本旧版一检出 Resolved 就立刻取数，恢复那条还没发出去。新版改成「等两通道都出现增量 + 再等 15s 落定」，正常一次演练应各 **+2** |
+| 钉钉里两条消息共用**一个**时间分隔（都显示 20:02），像同一时刻发的 | 钉钉客户端把间隔 <5 分钟的消息合并到同一时间分隔下。要看真实时刻，用 4.0 的 `--report` |
+| **RESOLVED 卡片正文仍写着**「可用副本数为 0，用户请求将全部失败」 | Alertmanager 固有行为：通知里的 `annotations` 是**告警触发那次求值的快照**，恢复通知会原样带上。卡片标题与状态行（`[RESOLVED]` / `Alerts Resolved`）是状态自适应的——**看标题，不要看正文描述**。kube-prometheus 自带的官方规则行为完全一致 |
+
+> 另：本次演练前 `email` 累计已经是 **17** 条，说明收口路由在把未分类告警
+> （`severity` 不是 critical/warning 的那批）灌进邮箱。已加
+> `severity = none → receiver discard` 收口（§6 第 5 条）。
+> `severity=info` 的告警仍会进邮箱，这是**有意保留**的（它们属于「值得知道」且量小）。
 
 ---
 
@@ -566,6 +626,9 @@ curl -s -X POST http://127.0.0.1:9093/api/v2/alerts -H 'Content-Type: applicatio
 | 9 | **告警在 Prometheus 里正常 FIRING、Alertmanager 也收到了，但邮件与钉钉一条都不发**；同时邮箱里却躺着一封 `monitoring` 命名空间的 InfoInhibitor 噪声邮件 | ① 读 chart 的 values 与 CRD，确认 `alertmanagerConfigMatcherStrategy` 默认是 `OnNamespace`；② 读 Operator 源码 `pkg/alertmanager/amcfg.go`，`namespaceEnforcer.processRoute` 明确写着「Routes created from AlertmanagerConfig resources should only match alerts that come from the same namespace」并 `append` 了一个 `namespace=<crKey.Namespace>` 匹配条件；③ 关键旁证：**唯一收到的那封邮件恰好是 `namespace=monitoring` 的告警**，与「只有 monitoring 的告警能匹配我们的路由」完全吻合 | AlertmanagerConfig 与业务告警**不在同一个命名空间**（配置在 monitoring、告警在 boutique），而 Operator 默认会把路由限制在配置所在的命名空间 → 业务告警全部落到 chart 默认根路由的 `null` 接收器上被静默丢弃 | 在 values 里设 `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace` → `helm upgrade`。本项目**保留**默认保护（不用 `None`）：因为我们的配置住在 Alertmanager 自己的命名空间，该策略的语义正是「放在我身边的配置 = 集群级策略」 |
 | 10 | 诊断脚本在 ECS 上一执行就崩：`line 18: $'\r': command not found` / `invalid option nameline 19: set: pipefail` / `syntax error near unexpected token \`$'in\r'\`` | 本地 `bash -n` 全过、Git Bash 也能跑 → 说明不是语法问题；用 `grep -qU $'\r'` 检查工作区文件，发现**只有这一个脚本是 CRLF** | 该文件被某个工具（python 以文本模式改写）写成了 CRLF。Windows 侧一切正常，Linux 的 bash 在**解析阶段**就拒绝。**报错不从第一行开始、且完全不像行尾符问题**，极易误判 | `sed -i 's/\r$//' scripts/diag-task7.sh`；`.gitattributes` 已强制 LF 但**只在 add/checkout 时生效、挡不住工作区被写坏**，所以 scp 前加一次 `grep -lU $'\r' scripts/*.sh` 自检（已写进 §3.5） |
 | 11 | `deploy-task7.sh` 的验收 2 连续 6 次「取不到 Alertmanager 的生效配置」，但手动 curl 一切正常 | 核对 Alertmanager 的 OpenAPI 规范（`api/v2/openapi.yaml`） | **`/api/v2/status` 里根本没有 `configYAML` 字段**（写它会静默拿到 `null`，不报错）；正确路径是 **`.config.original`**（返回原始配置字符串） | 改成 `.config.original`；并加了一条兜底：万一 API 再变，就直接 `exec` 进容器读配置文件，路径从容器自己的 `--config.file` 参数里取（不写死路径）。教训：**读第三方 API 前先核对它的 OpenAPI 规范**，别按记忆写字段名 |
+| 12 | 演练脚本报「通道计数只 +1」，看着像**只有一个通道发出去了**，但邮箱与钉钉里各有 2 条 | 脚本输出与收件箱对时间 → 计数是在检出 Resolved 后**立刻**取的，恢复通知稍后才投递 | **取数竞态**：Alertmanager「先标 Resolved、再异步投递恢复通知」 | 脚本改为先轮询等 `email` 与 `webhook` 都出现增量、再多等 15s 取终值；并**直接打印增量与逐通道判定**（旧版只打「前/后」两张快照要人自己相减——这正是误读的来源） |
+| 13 | 钉钉里 FIRING（20:02）与 RESOLVED（20:05）两条消息**共用一个时间分隔**，像同一时刻发的 | 改从 Alertmanager 日志取投递记录，两条相差 3 分钟 | 钉钉客户端会把**间隔 <5 分钟**的消息合并进同一时间分隔（收件人界面通病；邮箱则是只显示到分钟） | 新增 `alert-drill.sh --report`：读日志里 `msg="Notify success"` 的 `ts`（UTC→本机时区），算出「距故障 N 秒」。**收件人界面不再用作秒级证据** |
+| 14 | 收尾路径 `trap … EXIT` 里用 `${cur:-0}` 判副本数——`kubectl` 读取失败时 `cur` 为空、被当成 `0`，脚本会在**本来正常的集群上执行 scale，把副本数改成 2** | 用桩命令让 `kubectl get deploy` 返回空，观察收尾动作 | `${var:-0}` 把「读失败」和「真的是 0」混为一谈。收尾是**失败后也会执行**的路径，基于读失败做变更比不动作更糟 | ① 判定改成 `[[ "$cur" == "0" ]]`（**确实读到 0** 才恢复）；② 恢复目标不再写死 2，改用读到的**演练前真实副本数**（`RESTORE_REPLICAS`），读不到才退回 2 并显式告警 |
 
 ---
 
