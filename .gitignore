@@ -21,6 +21,11 @@ kubeconfig
 admin.conf
 *-secret.yaml
 .env
+# 钉钉转发的真实配置（含 access_token 与加签 secret）。
+# 入库的只有 manifests/alerts/dingtalk-webhook-config.example.yml（占位符版）。
+dingtalk-config.yml
+*-dingtalk-config.yml
+!*-dingtalk-config.example.yml
 
 # 编辑器 / 系统
 .vscode/

@@ -30,7 +30,7 @@
 | 4 | Online Boutique 上线（22 Pod、副本 2、反亲和） | ✅ |
 | 5 | Traefik Ingress + NodePort 暴露（30080/30443/30800） | ✅ |
 | 6 | 可观测性（kube-prometheus-stack + Loki + Promtail + 自建看板） | ✅ |
-| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | ⬜ **下一步** |
+| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟨 **配置与手册已就绪，待 2 个凭据上云**（`docs/alerting.md`） |
 | 8 | metrics-server + HPA 自动扩缩容 + hey 压测 | ⬜ |
 | 9 | 故障演练（drain 优雅排水 / 硬宕机） | ⬜ |
 | 10 | README 收口 + 简历定稿 | ⬜ |
@@ -108,17 +108,18 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:30080/    # 200
 k8s-sre-platform/
 ├── docs/
 │   ├── setup-cluster.md          # 任务 1-5 完整手册（含 8 条踩坑记录表，必读）
+│   ├── alerting.md               # ★ 任务 7 完整手册（告警双通道：步骤/时间预算/排障/面试要点）
 │   ├── chaos-drill.md            # 任务 9 演练模板（预写好步骤）
 │   ├── HANDOFF.md                # 本文档
 │   └── screenshots/              # 留证截图 + README.md 索引（编号跨阶段不重号）
 ├── manifests/
 │   ├── boutique/                 # 业务清单（已改造：镜像源/副本/反亲和），apply 顺序见目录内 README
 │   ├── ingress/                  # traefik-values.yaml + boutique-ingress.yaml
-│   ├── alerts/                   # ★ 任务 7 直接用：告警规则 + Alertmanager 路由
+│   ├── alerts/                   # ★ 任务 7 直接用：告警规则 + Alertmanager 路由 + 钉钉转发组件
 │   ├── hpa/                      # ★ 任务 8 直接用：frontend HPA（min2/max8/CPU60%）
 │   └── monitoring/               # ★ Grafana 看板 ConfigMap（JSON 生成，勿手改 yaml）
 ├── monitoring/                   # 三个 helm values（kps / loki / promtail）
-├── scripts/                      # 幂等脚本（00 系统初始化 / 10 装运行时 / check-images / …）
+├── scripts/                      # 幂等脚本（00 系统初始化 / 10 装运行时 / check-images / alert-drill / validate-crd-fields）
 └── downloads/                    # 已下载的 chart、helm 二进制、metrics-server 清单（多数被 gitignore）
 ```
 
@@ -178,24 +179,42 @@ k8s-sre-platform/
 | 2 | Git Bash 下 `grep -c $'\r'` 判 CRLF 会误报，用 `od -c` 或 `file` |
 | 3 | 粘贴长命令到 SSH 出现 `^[[200~` 前缀导致 command not found，重新手输即可 |
 | 4 | Helm 渲染时的资源名取决于 **release 名**（本文档 §3.2），别照抄教程 |
+| 5 | **本机出网通道变了（2026-09-13 实测）**：本地代理 `127.0.0.1:7897` 已不可用（连接被拒），但直连正常——`github.com` / `api.github.com` / `get.helm.sh` / `prometheus-community.github.io` 都返回 200。**不要再按旧笔记加 `-x http://127.0.0.1:7897`**，那会得到 000 |
+| 6 | **GitHub 的 release 资产下不通**：`github.com/<org>/<repo>/releases/download/...` 会 302 到 `objects.githubusercontent.com`，本机 curl 返回 000（helm、kubeconform、prometheus 的 release 包都试过）。要下载二进制请走**非 GitHub 的官方源**（如 helm 用 `get.helm.sh`）；仓库源码/索引走 `api.github.com` 与 `raw` 之外的路径仍可用 |
+| 7 | **Bash 工具里 coreutils 不在 PATH**：`ls` / `head` / `grep` / `wc` 一律 command not found。命令前加 `export PATH="/usr/bin:/bin:$PATH"` 即可恢复 |
+| 8 | **Git Bash 的 `/tmp` 与 Windows 程序的 `/tmp` 不是同一个目录**：bash 里 `/tmp/x.yaml` 能被 bash 的 `ls` 看到，但 Windows 版 Python 会去找 `E:\tmp\x.yaml` 而报 FileNotFoundError。跨工具传文件请统一用 `E:\...` 绝对路径 |
+| 9 | **自定义资源的字段错误不会报错**，会被 CRD **静默裁剪**。上手写任何 `PrometheusRule` / `AlertmanagerConfig` / `ServiceMonitor` 之前，先用 `scripts/validate-crd-fields.py` 过一遍（本地就能跑，见 `docs/alerting.md` §3 第 3 步） |
 
 ---
 
 ## 六、下一步怎么走
 
-### 任务 7：告警双通道（料已备好，差两个凭据）
+### 任务 7：告警双通道（配置已就绪，只差两个凭据）
 
-**前置**（需人工去申请）：
+> ★ **执行手册：`docs/alerting.md`（S4 阶段完整步骤，含时间预算表、排障分段定位、面试要点）**
+> 交接文档这里只留摘要；手册里的内容在 2026-09-13 已按实测逐条核对并修正。
+
+**前置**（需人工去申请，只有本人能拿）：
 1. QQ 邮箱网页版 → 设置 → 账户 → 开启 IMAP/SMTP → 生成**授权码**（不是登录密码）
 2. 钉钉群 → 设置 → 智能群助手 → 添加「自定义」机器人 → 安全设置选**加签** → 拿 webhook + secret
 
-**执行**：
-1. `kubectl apply -f manifests/alerts/boutique-alert-rules.yaml`（PrometheusRule：
-   节点内存>85%、Pod 重启>3 次、frontend 5xx>1%、服务不可用 1 分钟）
-2. `manifests/alerts/alertmanager-config.yaml` 按实际邮箱/钉钉改完再 apply
-   （钉钉需要 helm 装 `prometheus-webhook-dingtalk`，镜像记得换源）
-3. 触发测试：`kubectl scale deploy/frontend -n boutique --replicas=0` → 记录告警到达时间 → 恢复 → 记录恢复时间
-4. 验收：故障到告警 ≤2 分钟，截图 13-16（索引见 `docs/screenshots/README.md`）
+**执行（5 步，细节见手册）**：
+1. 邮箱授权码进 Secret：`kubectl -n monitoring create secret generic alertmanager-email-secret --from-literal=password='<授权码>'`
+2. 钉钉转发组件：造 `~/dingtalk-config.yml` → 存 Secret → `kubectl apply -f manifests/alerts/dingtalk-webhook.yaml`
+3. 应用规则与路由：`kubectl apply -f manifests/alerts/{boutique-alert-rules,alertmanager-config}.yaml`
+4. 触发演练：`bash scripts/alert-drill.sh --hold 150`（自动记录时间线 + 各通道发送计数增量）
+5. 留证：截图 13-16，时间线回填 `docs/alerting.md` §4
+
+**验收**：故障到告警 ≤2 分钟（预计 95~110 秒，推理见手册 §3）。
+**主验收告警是 `DeploymentReplicasUnavailable`（`for: 1m`）**，
+不是 `IngressHighErrorRate`（它要 `for: 5m`，本次演练不会触发）。
+
+> ⚠️ **原交接内容有 4 处已修正，不要再按旧版执行**（详见手册 §6）：
+> 1. 钉钉的 Helm chart 已从 prometheus-community **下架**，`helm install` 必然失败 → 改为自维护清单
+> 2. 排查建议里的 `sum by (service)` → 必须用 `exported_service`（标签被改名，见 §5.3 第 6 条）
+> 3. 邮箱配置里的 `headers.Subject` 字段跨版本 schema 不一致且属冗余 → 已删除
+> 4. 转发组件**不暴露 `/metrics`**，不能挂 ServiceMonitor（会造成永久 `up=0` 并触发自检规则）
+
 
 ### 任务 8：HPA 与压测
 
@@ -266,4 +285,15 @@ gcr.io/...           -> gcr.m.daocloud.io/...
 
 # 校验镜像在镜像站是否存在（不要只看 401）
 bash scripts/check-images.sh docker.1ms.run grafana/loki:3.6.11
+
+# 告警链路（任务 7，细节见 docs/alerting.md）
+bash scripts/alert-drill.sh --hold 150            # 触发演练 + 自动记录时间线
+curl -s localhost:9090/api/v1/rules | jq -r '.data.groups[]|select(.name|startswith("boutique"))|.name'
+kubectl -n monitoring get secret | grep alertmanager   # 找 alertmanager-*-generated，看路由是否合并成功
+kubectl -n monitoring logs deploy/prometheus-webhook-dingtalk --tail=30   # 钉钉通道报错
+
+# 上云前校验自定义资源字段（防 CRD 静默裁剪）
+python3 scripts/validate-crd-fields.py \
+  --crd <(kubectl get crd alertmanagerconfigs.monitoring.coreos.com -o yaml) \
+  --manifest manifests/alerts/alertmanager-config.yaml
 ```

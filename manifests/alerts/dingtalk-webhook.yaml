@@ -1,0 +1,201 @@
+# =============================================================================
+# 钉钉告警转发组件（prometheus-webhook-dingtalk）
+#
+# 为什么需要它：Alertmanager 原生只支持 email / webhook / slack / pagerduty 等
+# 通用通道，钉钉机器人的 JSON 格式与加签算法它都不认识。所以中间需要一个转换器：
+#   Alertmanager --(标准 webhook JSON)--> 本组件 --(钉钉加签 + 钉钉 JSON)--> 钉钉群
+#
+# -----------------------------------------------------------------------------
+# 为什么是自维护清单，而不是 helm install
+# -----------------------------------------------------------------------------
+# 交接文档原先写的是 `helm install prometheus-community/prometheus-webhook-dingtalk`。
+# 该 chart **已从 prometheus-community 仓库下架**（2026-09-13 实测：
+#   - 仓库 index.yaml 中已无此条目
+#   - charts 目录列表中没有它
+#   - 历史 release 资产下载返回 404）
+# 照抄会直接报：Error: chart "prometheus-webhook-dingtalk" not found in prometheus-community index
+# 故改为自维护清单：少一个 helm repo 依赖，版本与镜像源都显式可控。
+#
+# 上游软件本身仍在维护：https://github.com/timonwong/prometheus-webhook-dingtalk
+# 最新版本 v2.1.0（已核对 releases/latest）
+#
+# -----------------------------------------------------------------------------
+# 部署顺序
+# -----------------------------------------------------------------------------
+#   # 1) 先造配置（含 access_token 与加签 secret，**不入库**）
+#   cp manifests/alerts/dingtalk-webhook-config.example.yml ~/dingtalk-config.yml
+#   vim ~/dingtalk-config.yml
+#
+#   # 2) 存成 Secret（沿用本项目「凭据只进 Secret」的约定）
+#   kubectl -n monitoring create secret generic dingtalk-webhook-config \
+#     --from-file=config.yml=$HOME/dingtalk-config.yml
+#
+#   # 3) 起服务
+#   kubectl apply -f manifests/alerts/dingtalk-webhook.yaml
+#   kubectl -n monitoring rollout status deploy/prometheus-webhook-dingtalk
+#
+#   # 4) 验证（见文件末尾的「本次验证」注释，列出真实可用的端点）
+#
+# 更新配置后必须重建 Pod（Secret 以 subPath 挂载，不会热更新）：
+#   kubectl -n monitoring create secret generic dingtalk-webhook-config \
+#     --from-file=config.yml=$HOME/dingtalk-config.yml --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n monitoring rollout restart deploy/prometheus-webhook-dingtalk
+#
+# ⚠️ 不要给它加 ServiceMonitor：本组件 v2.1.0 **不暴露 /metrics**
+#    （已核对上游源码 cmd/prometheus-webhook-dingtalk/main.go 与 web/web.go：
+#      注册的路由只有 /dingtalk、/-/healthy、/-/ready、/-/reload（可选 /ui、/api/v1）,
+#      全局没有任何 promhttp / metrics 相关代码）
+#    若挂了 ServiceMonitor，Prometheus 会得到永久失败的抓取目标（up=0），
+#    反过来触发本项目自建的 ScrapeTargetDown 规则 —— 自造误报。
+#    它的健康改用「结果侧」观测：Alertmanager 发往它的通知失败会体现在
+#      alertmanager_notifications_failed_total{integration="webhook"}
+#    该指标由告警规则 AlertmanagerNotificationFailures 兜住。
+# =============================================================================
+# -----------------------------------------------------------------------------
+# ⚠️ 本文件**故意不包含** Secret 对象
+#
+# 早期设计把占位 Secret 一起放进来，看似省事，实际有个危险的顺序陷阱：
+#   先 `kubectl create secret` 写入真实凭据，再 `kubectl apply -f` 本文件，
+#   apply 会用清单里的占位值**覆盖掉刚写入的真实凭据**——
+#   而且不报错，表现为「配置看着都在，钉钉就是收不到消息」。
+# 所以 Secret 只通过命令创建（见下方部署顺序第 2 步），清单只负责引用它。
+# 代价：Secret 尚未创建时 apply 本文件，Pod 会停在 CreateContainerConfigError。
+# 这是**显式的失败**，比静默覆盖凭据好得多。
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-webhook-dingtalk
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus-webhook-dingtalk
+    app.kubernetes.io/component: alerting-bridge
+spec:
+  # 它是 critical 告警的必经之路，单副本 = 该 Pod 所在节点故障时钉钉通道整体失效
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-webhook-dingtalk
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus-webhook-dingtalk
+        app.kubernetes.io/component: alerting-bridge
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # 上游镜像基于 distroless/static:nonroot，内置用户 nobody 就是 65534
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      # 软反亲和：两个副本尽量分散，理由与业务 Pod 相同
+      # （用 preferred 不用 required，节点故障时新 Pod 才能落在同一节点上跑起来）
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: prometheus-webhook-dingtalk
+      containers:
+        - name: prometheus-webhook-dingtalk
+          # 镜像来自 Docker Hub（timonwong/...），按项目约定换到毫秒镜像源
+          # 已用 scripts/check-images.sh 走完整 token 流程验证：HTTP 200
+          image: docker.1ms.run/timonwong/prometheus-webhook-dingtalk:v2.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            # 显式写全参数，不依赖镜像 CMD 默认值，行为可预测
+            - --config.file=/etc/prometheus-webhook-dingtalk/config.yml
+            - --web.listen-address=:8060
+            - --log.level=info
+            # json 格式：Promtail 采集后 Loki 可直接做 json 管道解析（比 logfmt 更好切）
+            - --log.format=json
+          ports:
+            - name: http
+              containerPort: 8060
+              protocol: TCP
+          # ★ 探针端点来自上游源码 web/web.go 的真实注册（不是猜的）：
+          #   router.Get("/-/healthy", ...)  → 进程存活即 200
+          #   router.Get("/-/ready",   ...)  → 配置与模板加载完成才 200
+          # 用 HTTP 而不是 tcpSocket：能区分「端口开着但配置是坏的」这种状态
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            # 上游官方 contrib 清单给的 limits 是 cpu 100m / mem 100Mi，
+            # 这里补上 requests（HPA/调度都需要），并略放宽 limits
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 96Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # 组件会在工作目录写临时文件，保守起见不置 true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # 用 subPath 只挂载单个文件，**不要**把整个 /etc/prometheus-webhook-dingtalk
+            # 目录盖掉 —— 镜像里该目录下还有内置消息模板 templates/default.tmpl，
+            # 整个目录被挂载覆盖后模板会凭空消失，消息渲染直接报错
+            - name: config
+              mountPath: /etc/prometheus-webhook-dingtalk/config.yml
+              subPath: config.yml
+              readOnly: true
+      volumes:
+        - name: config
+          secret:
+            secretName: dingtalk-webhook-config
+            defaultMode: 0444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-webhook-dingtalk
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus-webhook-dingtalk
+spec:
+  # 仅供集群内 Alertmanager 调用，不需要对外暴露
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus-webhook-dingtalk
+  ports:
+    - name: http
+      port: 8060
+      targetPort: http
+      protocol: TCP
+---
+# 配合任务 9「优雅排水」：drain 节点时保证至少 1 个副本在服务
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: prometheus-webhook-dingtalk
+  namespace: monitoring
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-webhook-dingtalk

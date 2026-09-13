@@ -31,6 +31,36 @@
 > chart 的 tgz 地址是 `https://traefik.github.io/charts/traefik/traefik-<版本>.tgz`
 > （注意中间多一层 `traefik/` 目录，少了会 404）。
 
+## crds/ — 自定义资源的 schema（任务 7 起新增）
+
+`scripts/validate-crd-fields.py` 需要 CRD 的 schema 才能校验清单字段。
+**权威来源是集群上真实安装的那份**，不是上游 GitHub 的（上游可能比集群新或旧）：
+
+```bash
+mkdir -p downloads/crds
+kubectl get crd alertmanagerconfigs.monitoring.coreos.com -o yaml > downloads/crds/alertmanagerconfigs.yaml
+kubectl get crd prometheusrules.monitoring.coreos.com    -o yaml > downloads/crds/prometheusrules.yaml
+kubectl get crd servicemonitors.monitoring.coreos.com    -o yaml > downloads/crds/servicemonitors.yaml
+```
+
+用法：
+
+```bash
+python3 scripts/validate-crd-fields.py \
+  --crd downloads/crds/alertmanagerconfigs.yaml \
+  --manifest manifests/alerts/alertmanager-config.yaml
+```
+
+> **为什么必须做这一步**：CRD 是结构化 schema，清单里的未知字段**不报错、直接裁剪**。
+> `kubectl apply` 返回成功、`kubectl get` 也看得到对象，但字段就是没生效——
+> 这是本项目最贵的一类坑（已在 Traefik `service.type`、Loki `retention_period` 上各栽一次）。
+> 本目录不入 Git，重新导出即可。
+
+> **上游示例 CRD 与集群 CRD 的差异（实测）**：从上游生成的示例 CRD 里
+> `AlertmanagerConfig` 只有 `v1alpha1` 一个版本，且 `headers` 字段是
+> `type: array`（`{key, value}` 列表），与部分教程里写的 `map[string]string` 不同。
+> 所以校验一定要用集群自己那份，版本差异会直接决定字段能不能用。
+
 ## 为什么 Calico 清单要改镜像地址
 
 大陆 ECS 直连 `quay.io` 不通。原本的计划是「containerd 配 certs.d 镜像加速，YAML 不用动」，
@@ -93,9 +123,32 @@ sed 's|^        - --metric-resolution=15s$|        - --metric-resolution=15s\n  
   metrics-server-components.yaml > metrics-server-components-patched.yaml
 ```
 
-## 重新获取（代理不可用时）
+## 重新获取（境外资源怎么下）
 
-本机代理：`http://127.0.0.1:7897`
+> ⚠️ **出网通道已变化（2026-09-13 实测）**：下面这套「清代理变量 + 显式走
+> `127.0.0.1:7897`」的写法**当前不再适用**——本地代理 7897 已不可用（连接被拒），
+> 而**直连反而正常**：`github.com` / `api.github.com` / `get.helm.sh` /
+> `prometheus-community.github.io` 均返回 200。
+>
+> 所以现在的写法是**不带 `-x`**：
+>
+> ```bash
+> curl -sSL -o tigera-operator.yaml \
+>   https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
+> ```
+>
+> 注意 `raw.githubusercontent.com` 仍不稳定（实测返回 000）；需要读上游文件时，
+> 改用 GitHub API 的内容接口取（会返回 base64），例如：
+>
+> ```bash
+> curl -s "https://api.github.com/repos/<org>/<repo>/contents/<path>" \
+>   | python3 -c "import sys,json,base64;print(base64.b64decode(json.load(sys.stdin)['content']).decode())"
+> ```
+>
+> 另外 **GitHub 的 release 资产下载不通**（会 302 到 `objects.githubusercontent.com`，
+> 本机 curl 返回 000）。需要二进制时走非 GitHub 的官方源（如 helm 用 `get.helm.sh`）。
+>
+> 以下是旧写法，**仅在 7897 恢复可用时**才是对的：
 
 ```bash
 PX="http://127.0.0.1:7897"

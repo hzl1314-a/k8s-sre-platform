@@ -6,16 +6,27 @@
 #     prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues: false
 #   否则 Prometheus 只会加载带 release=kube-prometheus-stack 标签的 Rule，
 #   本文件会被静默忽略（现象：kubectl apply 成功，但 Prometheus UI 里看不到规则）。
+#   ✅ 本项目 monitoring/kube-prometheus-stack-values.yaml 已设置（任务 6 已完成）。
 #
-# 验证规则是否被加载：
+# 验证规则是否被加载（推荐用 API，能截图留证）：
 #   kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
-#   浏览器打开 http://localhost:9090/rules
+#   curl -s localhost:9090/api/v1/rules | jq -r '.data.groups[] | "\(.name)  \(.rules|length) 条"'
+#   浏览器打开 http://localhost:9090/rules 亦可
 #
 # 指标来源说明：
 #   node_*                        → node-exporter（节点层）
 #   kube_*                        → kube-state-metrics（K8s 对象层）
-#   traefik_service_requests_total→ Traefik（入口层，需在 traefik-values.yaml 中
-#                                   开启 metrics.prometheus.serviceMonitor）
+#   traefik_service_*             → Traefik（入口层，需 traefik-values.yaml 中
+#                                   metrics.prometheus.serviceMonitor.enabled=true）
+#   up                            → Prometheus 自身（抓取目标存活，见第四组）
+#
+# ⚠️ 标签陷阱（本项目已踩，别改回去）：
+#   Prometheus 抓取时会给样本注入 `service` / `namespace` / `pod` / `endpoint` 等
+#   目标标签；当指标自带同名标签时，honor_labels=false 会**给指标自己的标签加
+#   `exported_` 前缀**。所以 Traefik 指标里的服务名标签在 PromQL 中叫
+#   `exported_service`，**不是** `service`。
+#   用 `sum by (service)` 不会报错，只会得到一条空结果（静默失效）。
+#   详见 docs/setup-cluster.md 踩坑记录 / docs/alerting.md 踩坑记录表第 2 条。
 # =============================================================================
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -33,7 +44,7 @@ spec:
       rules:
         - alert: NodeMemoryHigh
           # 用「可用内存 / 总内存」计算，比 MemFree 准确（MemAvailable 已扣除内核缓存）
-          # 节点标签 instance 形如 172.16.0.11:9100，面试时能据此定位到具体 ECS
+          # 节点标签 instance 形如 172.18.240.100:9100，据此可定位到具体 ECS
           expr: |
             (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
           for: 5m
@@ -47,6 +58,8 @@ spec:
 
         - alert: NodeNotReady
           # 节点失联：kube-state-metrics 报告的 Ready 条件为假
+          # 表达式说明：kube_node_status_condition 对每个节点有 status=true/false/unknown
+          # 三条序列，healthy 时 status="true" 为 1；取 == 0 即「Ready 不为真」
           expr: |
             kube_node_status_condition{condition="Ready", status="true"} == 0
           for: 1m
@@ -65,7 +78,8 @@ spec:
       rules:
         - alert: PodFrequentRestart
           # increase() 处理 counter 重置，统计 15 分钟窗口内的增量
-          # 排除已完成的一次性 Pod（succeeded），只看仍在运行的容器
+          # 阈值 3 意味着「15 分钟内第 4 次重启」才告警 —— 偶发一次重启是正常的
+          # （探针抖动、节点维护都会导致），连续重启才是真问题
           expr: |
             increase(kube_pod_container_status_restarts_total{namespace="boutique"}[15m]) > 3
           for: 0m
@@ -80,6 +94,15 @@ spec:
         - alert: DeploymentReplicasUnavailable
           # 「可用副本数为 0」= 服务彻底不可用，这是最严重的一类告警
           # 用 sum by 聚合，避免同一 Deployment 多条时间序列重复告警
+          #
+          # ★ 任务 7 的触发测试就是打这条规则：kubectl scale deploy/frontend --replicas=0
+          #   预期时间线见 docs/alerting.md「时间预算」表（约 80~90 秒收到通知）
+          #
+          # 已知取舍（面试会被问）：手动 scale 到 0 也会触发它。
+          #   这是**有意为之**——生产环境里某个 Deployment 可用副本归零，无论原因都值得被告知，
+          #   计划内的缩容应该用 Alertmanager 的 silence 显式压制，而不是让规则去猜意图。
+          #   若要消除这类噪声，表达式可加一条守卫：`and (kube_deployment_spec_replicas > 0)`，
+          #   但那样本任务就无法用 scale 0 来演练告警链路了。
           expr: |
             sum by (namespace, deployment) (
               kube_deployment_status_replicas_available{namespace="boutique"}
@@ -104,6 +127,10 @@ spec:
           # 5xx 占比（%）。分母加 clamp_min 防止零流量时除以 0 产生 NaN
           # 注意：这是「入口观测到的错误率」，与业务自身埋点是两个视角，
           #      运维侧更关心用户实际感知到的失败比例
+          #
+          # 零 5xx 时分子匹配不到任何序列 → 整个表达式为空 → 不告警（正确行为）。
+          # 不要在告警表达式里套 `or 0 * 总量`——那是给**看板**用的惯用法
+          # （看板需要显示 0%，告警需要的是「不触发」）。
           expr: |
             (
               sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
@@ -117,10 +144,11 @@ spec:
           annotations:
             summary: "入口 5xx 错误率超过 1%"
             description: "过去 5 分钟 5xx 占比 {{ printf \"%.2f\" $value }}%，说明有用户请求正在失败。"
-            action: "1) 查看受影响的后端服务：sum by (service) (rate(traefik_service_requests_total{code=~\"5..\"}[5m]))；2) 查看该服务 Pod 日志；3) 确认是否为新版本发布引入。"
+            action: "1) 定位受影响后端：sum by (exported_service) (rate(traefik_service_requests_total{code=~\"5..\"}[5m]))；2) 查看该服务 Pod 日志；3) 确认是否为新版本发布引入。"
 
         - alert: IngressLatencyHigh
           # P95 延迟 > 2 秒。用直方图分位数，比平均延迟更能反映长尾体验
+          # sum by (le) 是聚合所有后端服务的整体体验（不按服务拆分）
           expr: |
             histogram_quantile(
               0.95,
@@ -134,3 +162,48 @@ spec:
             summary: "入口 P95 延迟超过 2 秒"
             description: "过去 5 分钟 P95 响应时间为 {{ printf \"%.2f\" $value }} 秒。"
             action: "1) kubectl top pods -n boutique 排查资源瓶颈；2) 检查是否有服务被限流或排队；3) 结合 HPA 副本数判断是否为容量不足。"
+
+    # -------------------------------------------------------------------------
+    # 第四组：监控链路自检（「谁来监控监控」）
+    #
+    # 前三组规则的数据全部来自各类 exporter 的抓取目标。如果 exporter 自己挂了，
+    # 指标会**安静地消失**——PromQL 匹配不到序列只是返回空，不会报错，
+    # 于是那些告警规则会一起静默失效，而值班的人以为「没有告警 = 一切正常」。
+    # 这是监控体系最危险的失效模式，必须有一条规则专门盯它。
+    # -------------------------------------------------------------------------
+    - name: boutique.scrape.rules
+      rules:
+        - alert: ScrapeTargetDown
+          # up 是 Prometheus 自产指标：每个配置的抓取目标一条，抓取成功为 1、失败为 0。
+          # 覆盖对象：node-exporter、kube-state-metrics、kube-proxy、traefik、
+          #          以及钉钉告警转发器的 ServiceMonitor 目标
+          expr: |
+            up == 0
+          for: 5m
+          labels:
+            severity: warning
+            component: monitoring
+          annotations:
+            summary: "抓取目标 {{ $labels.job }} ({{ $labels.instance }}) 已失联 5 分钟"
+            description: "Prometheus 无法抓取该目标的 /metrics，其指标已停止更新，依赖这些指标的所有告警规则都会静默失效。"
+            action: "1) kubectl get pods -n monitoring 看对应 Pod 是否 Running；2) kubectl get endpoints <service> -n <namespace>，若为空多为 Service 的 selector 与 Pod 标签不匹配；3) 核对 ServiceMonitor 里 port 名与 Service 的端口 name 是否一致（这是最常见的错因）。"
+
+        - alert: AlertmanagerNotificationFailures
+          # 告警发出去了但**送不到人**，是最难发现的一环：
+          # Prometheus 显示 FIRING，Alertmanager 也显示已发送，但邮箱/钉钉收不到。
+          # 这条规则直接盯住 Alertmanager 的发送失败计数。
+          # 指标：alertmanager_notifications_failed_total{integration, reason}
+          #   reason 常见取值：send_error（网络/认证失败）、notify（模板渲染失败）
+          #   已核对 Alertmanager 源码 notify/metrics.go 确认指标名与标签
+          expr: |
+            sum by (integration, reason) (
+              rate(alertmanager_notifications_failed_total[10m])
+            ) > 0
+          for: 10m
+          labels:
+            severity: critical
+            component: monitoring
+          annotations:
+            summary: "Alertmanager 向 {{ $labels.integration }} 的通知发送失败（原因 {{ $labels.reason }}）"
+            description: "过去 10 分钟存在持续发送失败（非零失败率）。此时 Prometheus 会显示告警已触发，但收件人收不到任何通知。"
+            action: "1) kubectl -n monitoring logs deploy/kube-prometheus-stack-alertmanager | tail -50 看具体报错；2) 钉钉：确认加签 secret 与机器人一致、DNS 能解析 oapi.dingtalk.com；3) 邮件：多为 SMTP 授权码过期（QQ 邮箱改密码会失效）或 465/587 与 requireTLS 不匹配。"

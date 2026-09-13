@@ -1,37 +1,61 @@
 # =============================================================================
-# Alertmanager 双通道告警路由
+# Alertmanager 双通道告警路由（AlertmanagerConfig CRD）
 #
 # 通道职责划分（体现告警分级意识，面试常问）：
 #   critical → 邮件 + 钉钉（立即处理，钉钉有声音提醒）
 #   warning  → 仅邮件（批量汇总，避免告警疲劳）
 #
-# 前置步骤（必须按顺序执行，否则本文件不生效）：
+# -----------------------------------------------------------------------------
+# 执行顺序（必须按此顺序，否则本文件不生效）
+# -----------------------------------------------------------------------------
 #
-# 1) 创建邮箱授权码 Secret（不要把密码写进 YAML 提交到仓库！）
-#    kubectl create secret generic alertmanager-email-secret \
-#      -n monitoring \
-#      --from-literal=password='<QQ邮箱SMTP授权码>'
+# 1) 创建邮箱授权码 Secret（**不要把授权码写进 YAML 提交到仓库**）
+#      kubectl -n monitoring create secret generic alertmanager-email-secret \
+#        --from-literal=password='<QQ邮箱SMTP授权码>'
+#    ⚠️ 是「授权码」不是 QQ 登录密码：QQ邮箱 → 设置 → 账户 → 开启 IMAP/SMTP 服务 → 生成授权码
 #
-# 2) 部署钉钉转发组件（Alertmanager 无法直接发钉钉，需要 webhook 转换器）
-#    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-#    helm install prometheus-webhook-dingtalk prometheus-community/prometheus-webhook-dingtalk \
-#      -n monitoring \
-#      --set config.targets.webhook1.url='https://oapi.dingtalk.com/robot/send?access_token=<token>' \
-#      --set config.targets.webhook1.secret='<加签密钥>'
+# 2) 部署钉钉转发组件（Alertmanager 无法直接发钉钉，中间需要一个 webhook 转换器）
+#      # 先造配置（文件不入库，见 .gitignore）
+#      cp manifests/alerts/dingtalk-webhook-config.example.yml ~/dingtalk-config.yml
+#      vim ~/dingtalk-config.yml      # 填 access_token 与加签 secret
+#      kubectl -n monitoring create secret generic dingtalk-webhook-config \
+#        --from-file=config.yml=$HOME/dingtalk-config.yml
+#      # 再起服务（Deployment + Service + ServiceMonitor）
+#      kubectl apply -f manifests/alerts/dingtalk-webhook.yaml
 #
-#    webhook URL 中的 webhook1 对应上面 --set config.targets.webhook1 的名字
+#    ⚠️ 不要再用 `helm install prometheus-community/prometheus-webhook-dingtalk`：
+#       该 chart 已从 prometheus-community 仓库下架（release tgz 返回 404），
+#       照抄旧教程会直接报 `chart "prometheus-webhook-dingtalk" not found`。
+#       本项目改为自维护清单（manifests/alerts/dingtalk-webhook.yaml），
+#       反而少一个 helm repo 依赖，版本也更可控。详见 docs/alerting.md 踩坑记录表第 1 条。
 #
-# 3) 让 Alertmanager 发现本配置：kube-prometheus-stack values 中需设置
-#      alertmanager.alertmanagerSpec.alertmanagerConfigSelectorNilUsesHelmValues: false
-#    否则只有带 release=kube-prometheus-stack 标签的 AlertmanagerConfig 会被加载。
+# 3) 让 Alertmanager 发现本配置：kube-prometheus-stack values 中已设置
+#      alertmanager.alertmanagerSpec.alertmanagerConfigSelector: {}
+#    （空选择器 = 匹配所有 AlertmanagerConfig）
+#    ⚠️ 老教程写的 `alertmanagerConfigSelectorNilUsesHelmValues: false`
+#       在 chart 90.x 的 alertmanagerSpec 下**已不存在**，写了会被静默忽略。
 #
-# 4) 确认生效：
-#    kubectl -n monitoring port-forward svc/kube-prometheus-stack-alertmanager 9093:9093
-#    浏览器打开 http://localhost:9093  → Status → Config 中应能看到本配置的 receiver
+# 4) 应用并验证
+#      kubectl apply -f manifests/alerts/alertmanager-config.yaml
+#      # ★ 最关键的一步：看 Operator 生成的最终配置里有没有我们的 receiver
+#      #   最终配置在一个自动生成的 Secret 里，名字规律 alertmanager-<Alertmanager CR 名>-generated
+#      kubectl -n monitoring get secret | grep alertmanager      # 先查准名字
+#      AM_GEN=$(kubectl -n monitoring get secret -o name | grep 'alertmanager.*generated' | head -1)
+#      kubectl -n monitoring get "$AM_GEN" -o jsonpath='{.data.alertmanager\.yaml}' | base64 -d | head -60
+#      预期能在 route.routes 下看到 receiver 名形如
+#        monitoring/boutique-alertmanager-config/email
+#        monitoring/boutique-alertmanager-config/dingtalk
+#      （Operator 会给 receiver 名加 <命名空间>/<配置名>/ 前缀避免跨配置冲突，
+#        本文件内部引用写短名即可，Operator 会自动解析。）
+#      # 也可打开 UI 核对（不用猜 Secret 名，留证推荐这个）：
+#      kubectl -n monitoring port-forward svc/kube-prometheus-stack-alertmanager 9093:9093
+#      #   http://localhost:9093 → Status → Config
 #
-# 触发测试（1-2 分钟内应收到通知）：
+# 触发测试（约 90 秒内应收到通知，时间预算见 docs/alerting.md）：
+#   bash scripts/alert-drill.sh                    # 推荐：自动记录时间线
+#   # 或手工：
 #   kubectl scale deploy/frontend -n boutique --replicas=0
-#   # 等待告警到达并记录时间
+#   # 等待邮件 + 钉钉到达，记录时间
 #   kubectl scale deploy/frontend -n boutique --replicas=2
 # =============================================================================
 apiVersion: monitoring.coreos.com/v1alpha1
@@ -45,25 +69,32 @@ metadata:
 spec:
   route:
     # 根路由：默认发给邮件（收口通道）
+    # 语义提醒：Alertmanager 的路由是「先匹配子路由，子路由都不匹配才用自己」。
+    #   所以根路由的 receiver 是兜底，而不是「同时发送」。
     receiver: email
+
     # 分组维度：同一告警名 + 同一命名空间 + 同一级别合并为一条通知，
     # 避免一次节点故障触发几十条独立通知
     groupBy: ['alertname', 'namespace', 'severity']
     groupWait: 10s        # 首次通知前的等待，攒一下同组告警
     groupInterval: 30s    # 同组内有新告警时的追加间隔
     repeatInterval: 2h    # 未恢复告警的重复提醒间隔
+
     routes:
-      # critical 告警：邮件 + 钉钉双通道，continue=true 表示继续匹配后面的兄弟路由
+      # ---- critical：钉钉（先匹配，continue=true 继续找兄弟路由）----
+      # continue 是实现「一对多」的关键：没有它，匹配到钉钉后就不会再匹配下面的邮件路由
       - receiver: dingtalk
         matchers:
           - name: severity
             value: critical
             matchType: "="
         continue: true
-        groupWait: 5s
-        repeatInterval: 30m
+        groupWait: 5s        # critical 要快，只等 5 秒就发
+        repeatInterval: 30m  # 未恢复的 critical 每 30 分钟提醒一次
 
-      # critical 告警：同时发邮件（与上面形成双通道）
+      # ---- critical：同时发邮件（与上面构成双通道，互不依赖）----
+      # 为什么冗余也要发邮件：钉钉 webhook 依赖 oapi.dingtalk.com 与转发组件，
+      # 多一条独立链路 = 单通道故障时告警仍能到达
       - receiver: email
         matchers:
           - name: severity
@@ -72,7 +103,7 @@ spec:
         groupWait: 5s
         repeatInterval: 1h
 
-      # warning 告警：仅邮件，且拉长重复间隔，避免告警疲劳
+      # ---- warning：仅邮件，且拉长重复间隔，避免告警疲劳 ----
       - receiver: email
         matchers:
           - name: severity
@@ -86,25 +117,83 @@ spec:
     # -------------------------------------------------------------------------
     - name: email
       emailConfigs:
+        # ⚠️ 隐私提醒：这里会暴露你的邮箱地址。若仓库要公开到 GitHub，
+        #    建议换成专用的求职/项目邮箱，或接受该风险。
         - to: '3304345637@qq.com'
           from: '3304345637@qq.com'
-          # 465 为 SMTPS（隐式 TLS）；若发信失败可改用 587 + requireTLS: true
+          # 465 = SMTPS（建连即 TLS，隐式加密）；587 = SMTP + STARTTLS（先明文握手再升级）
           smarthost: 'smtp.qq.com:465'
           authUsername: '3304345637@qq.com'
+          # 授权码从 Secret 读取，操作者只需创建一次，配置文件本身可安全入库
           authPassword:
             name: alertmanager-email-secret
             key: password
-          # 465 端口本身即 TLS，无需 STARTTLS
+          # 465 端口本身即 TLS，无需 STARTTLS，故置 false
           requireTLS: false
+          # HELO/EHLO 时对外报的主机名。QQ 邮箱对握手来源较敏感，显式声明更稳
+          hello: 'qq.com'
           # 恢复通知同样发送——「恢复」比「告警」更能体现监控体系闭环
           sendResolved: true
-          headers:
-            Subject: '{{ template "email.default.subject" . }}'
+
+        # ⚠️ 这里**故意不写** headers.Subject。
+        #
+        # 原配置写了 `headers: {Subject: '{{ template "email.default.subject" . }}'}`，
+        # 两个问题：
+        #   1) 功能上是空操作 —— 那正是 Alertmanager 没配 Subject 时的默认行为，
+        #      写它等于把默认值抄了一遍，零收益；
+        #   2) 版本脆弱 —— headers 的 schema 在 Operator 版本间变过：
+        #      新版是 `type: array`（元素为 {key, value} 键值对），
+        #      老版是 `map[string]string`。写成 map 在新 CRD 上会 apply 报错，
+        #      写成 array 在老 CRD 上会被拒 —— 两种写法都无法两端兼容。
+        # 结论：不需要自定义 Subject 就别碰这个字段。
+        # 若确实要改标题格式，先确认本地 CRD 是哪种：
+        #   kubectl get crd alertmanagerconfigs.monitoring.coreos.com -o jsonpath=\
+        #     '{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.receivers.items.properties.emailConfigs.items.properties.headers.type}'
+
+        # 若 465 发信失败（报 530 Must issue a STARTTLS / 握手超时），改用 587：
+        #   smarthost: 'smtp.qq.com:587'
+        #   requireTLS: true
+        #
+        # 另有一个字段 forceImplicitTLS（显式声明「强制隐式 TLS」）：
+        #   true = 任意端口都用直连 TLS；nil（默认）= 按端口自动判断（465→隐式，其它→显式）
+        #   它要求 Alertmanager >= v0.31.0，写在不支持的版本上会导致配置解析失败、
+        #   **整个 Alertmanager 起不来**，所以这里不写、依赖端口自动判断（默认行为已正确）。
 
     # -------------------------------------------------------------------------
-    # 通道二：钉钉（经 prometheus-webhook-dingtalk 转换）
+    # 通道二：钉钉（经 prometheus-webhook-dingtalk 转换为钉钉可识别的 JSON）
     # -------------------------------------------------------------------------
     - name: dingtalk
       webhookConfigs:
+        # 指向集群内的转发组件 Service（同命名空间，用短域名即可）
+        # 路径规则：/<转换器类型>/<target 名>/send，target 名对应配置里的 targets.webhook1
         - url: 'http://prometheus-webhook-dingtalk.monitoring.svc:8060/dingtalk/webhook1/send'
           sendResolved: true
+          # 单条消息最多带 5 条告警。钉钉 markdown 消息体有大小上限，
+          # 告警风暴时不设上限会被钉钉直接拒收（你反而什么都收不到）
+          maxAlerts: 5
+
+  # ---------------------------------------------------------------------------
+  # 告警抑制（可选，二期）。
+  #
+  # 目的：服务已彻底不可用时，不要再被它的下游错误率告警重复轰炸——
+  #   例如 frontend 副本归零（DeploymentReplicasUnavailable，critical）时，
+  #   入口 5xx 必然飙升（IngressHighErrorRate，critical），后者是前者的**结果**，
+  #   抑制它能显著降低噪声，也让「根因告警」更醒目。
+  #
+  # ⚠️ 字段名在不同 Operator 版本间不一致，用错会被静默裁剪（不报错但也不生效）：
+  #     新版本：sourceMatchers / targetMatchers（matchers 列表）
+  #     老版本（本项目冻结的 chart 90.1.1 CRD 实测）：只有 sourceMatch / targetMatch（map）
+  #   启用前先确认你的 CRD 支持哪个：
+  #     kubectl get crd alertmanagerconfigs.monitoring.coreos.com \
+  #       -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.inhibitRules.items.properties}' | tr ',' '\n'
+  #   然后按实际字段名解开对应注释。
+  #
+  # inhibitRules:
+  #   - sourceMatch:
+  #       - name: alertname
+  #         value: DeploymentReplicasUnavailable
+  #     targetMatch:
+  #       - name: alertname
+  #         value: IngressHighErrorRate
+  #     equal: ['namespace']
+  # ---------------------------------------------------------------------------

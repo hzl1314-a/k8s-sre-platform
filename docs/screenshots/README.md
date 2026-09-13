@@ -70,10 +70,23 @@
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `13-alert-rule-fired.png` | Prometheus 中告警规则变为 FIRING | 待采集 |
-| `14-alert-email.png` | 邮箱收到的告警邮件 | 待采集 |
-| `15-alert-dingtalk.png` | 钉钉机器人收到的告警 | 待采集 |
-| `16-alert-recovered.png` | 恢复通知 | 待采集 |
+| `13-alert-rule-fired.png` | Prometheus → Alerts 页面，`DeploymentReplicasUnavailable` 状态为 **FIRING**（截图要带上浏览器地址栏，证明是本集群的 Prometheus） | 待采集 |
+| `14-alert-email.png` | 邮箱收到的告警邮件（**必须能看到收件时间**，它是「故障→触达」秒数的证据） | 待采集 |
+| `15-alert-dingtalk.png` | 钉钉机器人收到的告警（**带上消息时间戳**） | 待采集 |
+| `16-alert-recovered.png` | 恢复通知（邮件或钉钉任一即可，证明闭环） | 待采集 |
+
+> **主验收告警是 `DeploymentReplicasUnavailable`，不是 `IngressHighErrorRate`**。
+> 前者 `for: 1m`、故障后约 90 秒触达；后者要 `for: 5m` + 5 分钟速率窗口，
+> 本次演练（故障约 150 秒）**不会**触发。别在告警列表里干等它。
+> 完整时间预算见 `docs/alerting.md` §3。
+>
+> 采集建议：用 `bash scripts/alert-drill.sh --hold 150` 跑演练，脚本会打印
+> 时间线与各通道发送计数增量；截图时把脚本输出也一并截进去，
+> 这样 `13` 的图里同时有「告警 FIRING」和「故障注入时刻」，证据链更完整。
+>
+> 另：`14`/`15` 两张图的时间戳要能和脚本输出的 `T_FAULT` 对上——
+> 面试时被追问「这个 90 秒怎么来的」，两张图加一行脚本输出就能自证。
+
 
 ### S5 压测与 HPA（任务 8）
 

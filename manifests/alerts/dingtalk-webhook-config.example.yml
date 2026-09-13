@@ -1,0 +1,54 @@
+# =============================================================================
+# prometheus-webhook-dingtalk 的**配置文件**（不是 Kubernetes 清单！）
+#
+# 用途：本文件内容会作为 `config.yml` 存进 K8s Secret，再挂载进容器。
+#   cp manifests/alerts/dingtalk-webhook-config.example.yml ~/dingtalk-config.yml
+#   vim ~/dingtalk-config.yml          # 填两个真值
+#   kubectl -n monitoring create secret generic dingtalk-webhook-config \
+#     --from-file=config.yml=$HOME/dingtalk-config.yml
+#
+# ⚠️ 本文件（含真实 token 的那份副本）**不要提交到仓库**。
+#    .gitignore 已排除 dingtalk-config.yml；本 example 文件只放占位符，可以入库。
+#    Secret 名（dingtalk-webhook-config）必须与 manifests/alerts/dingtalk-webhook.yaml 一致。
+#
+# 字段来源：已核对上游 v2.1.0 的 config.example.yml 与 contrib/k8s/config/config.yaml，
+#          不是照抄博客。
+# =============================================================================
+
+# 请求钉钉接口的超时。默认 5s；网络抖动时可略放宽
+timeout: 10s
+
+# 不要声明 templates：留空即使用二进制内置的默认模板。
+# 若声明了 templates 路径却指不到文件，组件会启动失败（readiness 一直不通过）。
+
+# -----------------------------------------------------------------------------
+# targets.<名字> —— 这个名字**必须**与 Alertmanager 里 webhook URL 的路径段一致
+#
+#   Alertmanager 侧：http://prometheus-webhook-dingtalk.monitoring.svc:8060/dingtalk/webhook1/send
+#                                                                              ^^^^^^^^^^
+#   本文件侧：      targets: { webhook1: { ... } }
+#                             ^^^^^^^^^^
+#   两处不一致的典型症状：Alertmanager 日志报 404，钉钉永远收不到消息。
+# -----------------------------------------------------------------------------
+targets:
+  webhook1:
+    # 钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义（通过 Webhook 接入自定义服务）
+    # 安全设置选「加签」，复制完整的 Webhook 地址（含 access_token 参数）
+    url: https://oapi.dingtalk.com/robot/send?access_token=REPLACE_WITH_YOUR_ACCESS_TOKEN
+
+    # 安全设置选「加签」时生成的密钥，形如 SEC 开头的一长串
+    # 组件会用它与时间戳做 HMAC-SHA256，把签名附加到请求上
+    # ⚠️ 若机器人安全设置选的是「自定义关键词」而不是「加签」，
+    #    则不要写 secret，改为在代码关键字里填一个一定出现的词（如 Prometheus / 告警），
+    #    否则钉钉会拒收并返回 errcode 310000
+    secret: SEC_REPLACE_WITH_YOUR_SIGN_SECRET
+
+    # 可选：@ 相关配置
+    # mention:
+    #   all: true                                            # @所有人（critical 才建议开）
+    #   mobiles: ['13800138000']                             # 按手机号 @ 指定人
+
+    # 可选：覆写消息模板（默认模板见上游 template/default.tmpl）
+    # message:
+    #   title: '{{ template "dingtalk.title" . }}'
+    #   text: '{{ template "dingtalk.content" . }}'
