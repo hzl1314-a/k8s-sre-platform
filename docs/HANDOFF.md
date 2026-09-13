@@ -240,9 +240,10 @@ bash ~/alert-drill.sh --hold 150     # 跑演练：自动记时间线 + 逐通�
 bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取精确到秒的投递时刻
 ```
 
-**为什么不看收件人界面**（实测踩到，详见 §5.3 第 13 条）：邮箱只显示到分钟；
-钉钉会把间隔 <5 分钟的消息合并进同一个时间分隔，于是 FIRING 与 RESOLVED 看起来像
-同一时刻发的。权威来源是 Alertmanager 日志里的 `msg="Notify success"`。
+**为什么这两个界面都不能用来算秒**（详见 §5.3 第 13 条）：邮箱与钉钉桌面客户端
+**都只显示到分钟**（实测 `20:40` / `20:43`）。脚本原先想读 Alertmanager 日志里的
+`msg="Notify success"`，但那条日志在「首次投递成功」时是 **Debug** 级别、默认不打印，
+真机 grep 零命中。现改为演练期间每 2s 直接采样 Alertmanager `/metrics`。
 
 **剩余事项**：
 
