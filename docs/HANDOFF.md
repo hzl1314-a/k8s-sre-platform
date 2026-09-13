@@ -74,7 +74,7 @@
 
 ### 给下一任的开场提示（新会话直接把这段粘贴给 AI 即可）
 
-> 我在接着做 k8s-sre-platform 求职作品集项目（`E://yes//k8s-sre-platform`）。
+> 我在接着做 k8s-sre-platform 求职作品集项目（仓库在 `E:/yes/k8s-sre-platform`）。
 > 请先通读 `docs/HANDOFF.md`——尤其「零、上一轮会话交接摘要」和第五节踩坑表，
 > 然后从**任务 8**（metrics-server + HPA + hey 压测）开始。任务 7 已完整收尾，
 > 手册在 `docs/alerting.md`。动手前先提醒我两件事：① 有一个待拍板的遗留问题
