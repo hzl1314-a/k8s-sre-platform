@@ -33,3 +33,11 @@ dingtalk-config.yml
 .DS_Store
 Thumbs.db
 *.samples
+
+# Python
+__pycache__/
+*.pyc
+
+# 例外：docs 下的演练/压测/修复证据日志是证据链，必须入库（其余 *.log 仍忽略）
+!docs/*.log
+!docs/*.bak

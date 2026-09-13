@@ -1,0 +1,114 @@
+[01:39:40] === 演练二观测开始（假定 T0=现在，用户应已按下强制关机）===
+[01:39:40] 探针已启动（900s 自限）
+[01:39:41] AM 计数基线: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:39:41] adservice-86b59d9c58-tx7j6 Running k8s-w2
+cartservice-5c9cc858dd-bxvxw Running k8s-w2
+checkoutservice-676dc7b7d5-bqjfk Running k8s-w2
+currencyservice-b987fc6d7-6zjpd Running k8s-w2
+emailservice-648dcc66c5-b78l6 Running k8s-w2
+frontend-58c745c7-mn2fn Running k8s-w2
+paymentservice-f66fb9bfd-vllhz Running k8s-w2
+productcatalogservice-8464978b9c-b7467 Running k8s-w2
+recommendationservice-85c947bc96-ng2bq Running k8s-w2
+shippingservice-869c4488f7-jkf8q Running k8s-w2
+[01:39:43] T+0s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:39:53] T+10s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:40:03] T+21s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:40:14] T+31s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:40:24] T+41s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:40:34] T+52s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:40:45] T+62s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:40:55] T+72s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:41:05] T+83s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:41:16] T+93s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:41:26] T+103s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:41:36] T+114s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:41:47] T+124s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:41:57] T+135s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:42:08] T+145s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:42:18] T+155s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:42:28] T+165s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:42:39] T+176s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 0 | alertmanager_notifications_total{integration="webhook"} 0
+[01:42:49] T+186s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:42:59] T+197s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:43:10] T+207s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:43:20] T+217s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:43:30] T+227s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:43:41] T+238s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:43:51] T+248s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:44:01] T+258s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:44:11] T+269s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:44:22] T+279s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:44:32] T+289s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:44:42] T+300s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:44:53] T+310s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:45:03] T+321s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:45:13] T+331s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:45:24] T+341s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:45:34] T+351s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:45:44] T+362s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:45:55] T+372s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:46:05] T+382s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 1 | alertmanager_notifications_total{integration="webhook"} 1
+[01:46:15] T+393s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 4 | alertmanager_notifications_total{integration="webhook"} 1
+[01:46:26] T+403s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 4 | alertmanager_notifications_total{integration="webhook"} 1
+[01:46:28] T+406s | adservice-86b59d9c58-tx7j6: Running -> Terminating
+[01:46:28] T+406s | cartservice-5c9cc858dd-bxvxw: Running -> Terminating
+[01:46:28] T+406s | checkoutservice-676dc7b7d5-bqjfk: Running -> Terminating
+[01:46:28] T+406s | currencyservice-b987fc6d7-6zjpd: Running -> Terminating
+[01:46:28] T+406s | emailservice-648dcc66c5-b78l6: Running -> Terminating
+[01:46:28] T+406s | frontend-58c745c7-mn2fn: Running -> Terminating
+[01:46:28] T+406s | paymentservice-f66fb9bfd-vllhz: Running -> Terminating
+[01:46:28] T+406s | productcatalogservice-8464978b9c-b7467: Running -> Terminating
+[01:46:28] T+406s | recommendationservice-85c947bc96-ng2bq: Running -> Terminating
+[01:46:28] T+406s | shippingservice-869c4488f7-jkf8q: Running -> Terminating
+[01:46:30] T+409s | adservice-86b59d9c58-485zp: ContainerCreating -> Running
+[01:46:30] T+409s | cartservice-5c9cc858dd-pzmx8: ContainerCreating -> Running
+[01:46:30] T+409s | checkoutservice-676dc7b7d5-7j8tn: ContainerCreating -> Running
+[01:46:30] T+409s | currencyservice-b987fc6d7-knxqr: ContainerCreating -> Running
+[01:46:30] T+409s | emailservice-648dcc66c5-mhclp: ContainerCreating -> Running
+[01:46:30] T+409s | frontend-58c745c7-xj4n6: ContainerCreating -> Running
+[01:46:30] T+409s | paymentservice-f66fb9bfd-r967s: ContainerCreating -> Running
+[01:46:30] T+409s | recommendationservice-85c947bc96-sshx4: ContainerCreating -> Running
+[01:46:30] T+409s | shippingservice-869c4488f7-9ws79: ContainerCreating -> Running
+[01:46:33] T+411s | productcatalogservice-8464978b9c-7494b: ContainerCreating -> Running
+[01:46:36] T+413s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 5 | alertmanager_notifications_total{integration="webhook"} 1
+[01:46:46] T+424s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 7 | alertmanager_notifications_total{integration="webhook"} 1
+[01:46:57] T+434s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 7 | alertmanager_notifications_total{integration="webhook"} 1
+[01:47:07] T+444s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 7 | alertmanager_notifications_total{integration="webhook"} 1
+[01:47:17] T+455s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 7 | alertmanager_notifications_total{integration="webhook"} 1
+[01:47:28] T+465s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 7 | alertmanager_notifications_total{integration="webhook"} 1
+[01:47:38] T+475s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 7 | alertmanager_notifications_total{integration="webhook"} 1
+[01:47:48] T+486s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:47:59] T+496s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:48:09] T+507s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:48:20] T+517s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:48:30] T+527s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:48:41] T+538s | 节点w2[NotReady] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:48:51] T+548s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:49:02] T+559s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 8 | alertmanager_notifications_total{integration="webhook"} 1
+[01:49:12] T+569s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 11 | alertmanager_notifications_total{integration="webhook"} 2
+[01:49:23] T+580s | 节点w2[Ready] w2上pod=10 | AM: alertmanager_notifications_total{integration="email"} 11 | alertmanager_notifications_total{integration="webhook"} 2
+[01:49:30] T+588s | currencyservice-b987fc6d7-6zjpd: 消失
+[01:49:30] T+588s | productcatalogservice-8464978b9c-b7467: 消失
+[01:49:32] T+590s | adservice-86b59d9c58-tx7j6: 消失
+[01:49:32] T+590s | cartservice-5c9cc858dd-bxvxw: 消失
+[01:49:32] T+590s | emailservice-648dcc66c5-b78l6: 消失
+[01:49:32] T+590s | frontend-58c745c7-mn2fn: 消失
+[01:49:32] T+590s | paymentservice-f66fb9bfd-vllhz: 消失
+[01:49:32] T+590s | recommendationservice-85c947bc96-ng2bq: 消失
+[01:49:32] T+590s | shippingservice-869c4488f7-jkf8q: 消失
+[01:49:33] T+590s | 节点w2[Ready] w2上pod=1 | AM: alertmanager_notifications_total{integration="email"} 11 | alertmanager_notifications_total{integration="webhook"} 2
+[01:49:35] T+594s | checkoutservice-676dc7b7d5-bqjfk: 消失
+[01:49:44] T+601s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:49:54] T+611s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:50:04] T+622s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:50:15] T+632s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:50:25] T+642s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:50:36] T+653s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:50:46] T+663s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:50:55] T+673s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:51:08] T+685s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:51:18] T+695s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:51:28] T+706s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:51:39] T+716s | 节点w2[Ready] w2上pod=0 | AM: alertmanager_notifications_total{integration="email"} 12 | alertmanager_notifications_total{integration="webhook"} 2
+[01:51:43] --- watch 阶段结束 T+722s ---

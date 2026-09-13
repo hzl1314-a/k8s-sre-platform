@@ -1,0 +1,59 @@
+[02:26:48] SSH 已连接 cp 节点
+[02:26:49] 修复前副本分布（基线）：
+traefik-9d7bc48c6-6qbgb   1/1   Running   0     4m33s   192.168.46.35    k8s-w2   <none>   <none>
+traefik-9d7bc48c6-rwlds   1/1   Running   0     4m13s   192.168.62.135   k8s-cp   <none>   <none>
+[02:26:49] values 已上传并 md5 校验一致（5719a587ac150882272f8870a96b5f4b）
+[02:26:49] 执行 helm upgrade ...
+[02:26:52] helm upgrade 退出码 0
+Release "traefik" has been upgraded. Happy Helming!
+NAME: traefik
+LAST DEPLOYED: Mon Sep 14 02:27:04 2026
+NAMESPACE: traefik
+STATUS: deployed
+REVISION: 5
+TEST SUITE: None
+NOTES:
+traefik with docker.m.daocloud.io/library/traefik:v3.7.13 has been deployed successfully on traefik namespace!
+[02:26:52] 轮询中：Running 2/2，节点 ['k8s-w2', 'k8s-cp']
+[02:26:52] 修复后副本分布（复验）：
+NAME                      READY   STATUS    RESTARTS   AGE     IP               NODE     NOMINATED NODE   READINESS GATES
+traefik-9d7bc48c6-6qbgb   1/1     Running   0          4m36s   192.168.46.35    k8s-w2   <none>           <none>
+traefik-9d7bc48c6-rwlds   1/1     Running   0          4m16s   192.168.62.135   k8s-cp   <none>           <none>
+[02:26:52] Deployment 反亲和 / 容忍配置：
+  Tolerations:     node-role.kubernetes.io/control-plane:NoSchedule op=Exists
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    NewReplicaSetAvailable
+OldReplicaSets:  traefik-7b4df6ff44 (0/0 replicas created), traefik-757f4d56ff (0/0 replicas created), traefik-cc56558c (0/0 replicas created)
+NewReplicaSet:   traefik-9d7bc48c6 (2/2 replicas created)
+Events:
+[02:26:53] 入口探活 http://127.0.0.1:30080/ -> 200
+[02:26:53] 复验结论：required 反亲和生效，双副本分落两节点；入口探活 200 ✅（应为 200）
+
+--- 证据链注释（2026-09-14 02:35 追加） ---
+上方日志是 Revision 5（02:27:04，同配置重放）的全程留痕。
+Revision 4（02:22:29，首次应用本修复）的原始日志因第二次运行以覆盖模式
+写同名文件而丢失，其时间线已由首次执行方逐字回填
+docs/chaos-drill.md「修复与复验」一节，且集群侧有独立留痕：
+- helm history: Revision 4 = 2026-09-14 02:22:29 "Upgrade complete"
+- ReplicaSet traefik-9d7bc48c6 创建于 2026-09-13T18:22:30Z（UTC+8 = 02:22:30）
+- kubectl events: 新副本① Scheduled to k8s-w2 → 新副本② Scheduled to k8s-cp
+  （cp 带 NoSchedule 污点，副本能落上去 = toleration 生效的直接证据）
+  → 旧 RS cc56558c（preferred 版本）缩容至 0
+- 修复前基线「双副本同落 w1」（02:22:14 首次运行输出）已回填 chaos-drill.md
+两个 Revision 的 values 经 `helm get values --all` diff 逐字节一致。
+Revision 5 的价值：SFTP md5 校验确保 cp 上的 values 与仓库完全对齐，并独立复验一遍。
+
+--- 稳态复验（追加） ---
+[02:36:56] === rollout status (rc=0) ===
+deployment "traefik" successfully rolled out
+
+[02:36:57] === 最终副本分布 (rc=0) ===
+NAME                      READY   STATUS    RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
+traefik-9d7bc48c6-6qbgb   1/1     Running   0          14m   192.168.46.35    k8s-w2   <none>           <none>
+traefik-9d7bc48c6-rwlds   1/1     Running   0          14m   192.168.62.135   k8s-cp   <none>           <none>
+
+[02:36:57] === 探活 (rc=0) ===
+200

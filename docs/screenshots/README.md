@@ -132,9 +132,9 @@ FIRING，必须在那段时间里截。
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `17-hpa-scale-up.png` | `kubectl get hpa -w` 扩容过程 | 待采集 |
-| `18-hey-result.png` | hey 压测结果（QPS / 延迟分布） | 待采集 |
-| `19-grafana-hpa-curve.png` | 压测期间 QPS 与副本数曲线 | 待采集 |
+| `17-hpa-scale-up.png` | HPA 扩缩容全周期（6 帧合成：基线 2→CPU 爬升→扩容 3→求衡→负载归零→缩容 2，附 Prometheus 交叉验证） | ✅ 2026-09-14 合成图（数据源 `docs/hpa-drill-timeline.log`，先例同截图 13） |
+| `18-hey-result.png` | hey 压测结果：7426 请求全部 200，24.66 req/s，P99 2.78s | ✅ 2026-09-14 合成图（数据源 `docs/hpa-hey-result.txt`，先例同截图 13） |
+| `19-grafana-hpa-curve.png` | Grafana 业务总览 30 分钟全周期：QPS 爬坡→峰值 25 req/s→回落；P95 延迟平台；Pod CPU 峰值；含 currencyservice OOM 重启阶梯 | ✅ 2026-09-14 真机截图（puppeteer + 本机 Chrome 无头登录，`scripts/grafana-shot.mjs`） |
 
 ### S6 故障演练（任务 9）
 
@@ -143,7 +143,9 @@ FIRING，必须在那段时间里截。
 
 | 文件名 | 内容 | 状态 |
 |---|---|---|
-| `chaos-01-drain.png` | drain 过程 Pod 漂移 | 待采集 |
-| `chaos-02-alert-email.png` | 宕机告警邮件 | 待采集 |
-| `chaos-03-alert-dingtalk.png` | 宕机告警钉钉 | 待采集 |
-| `chaos-04-recovery.png` | 恢复通知 | 待采集 |
+| `chaos-01-drain.png` | 演练一 Pod 漂移 + 可用性 99.03% + 告警行为（合成图，数据源 chaos-drill1-timeline.log / probe-drill1.log） | ✅ 2026-09-14 |
+| `chaos-02-alert-email.png` | 宕机告警邮件（NodeNotReady critical，01:42:14 到达） | ✅ 2026-09-14 |
+| `chaos-03-alert-dingtalk.png` | 宕机告警钉钉（01:43 到达） | ✅ 2026-09-14 |
+| `chaos-04-recovery.png` | 恢复通知邮件（RESOLVED NodeNotReady，01:49 到达） | ✅ 2026-09-14 |
+| `chaos-04-recovery-dingtalk.png` | 恢复通知钉钉（01:49 到达） | ✅ 2026-09-14 |
+| `chaos-05-poweroff.png` | 演练二时间线 + 可用性窗口条（合成图） | ✅ 2026-09-14 |

@@ -221,7 +221,11 @@ kubeControllerManager:
 kubeEtcd:
   enabled: false
 kubeProxy:
-  enabled: true
+  # 同上：kubeadm 默认不给 kube-proxy 开 10249 指标端口（k8s 新版本行为），
+  # 抓取目标永远 up=0 → ScrapeTargetDown 常驻 FIRING（2026-09-13 实测）。
+  # 选择关抓取而非改 3 个节点 kubelet 配置：k8s 新版本里这组指标价值很低，
+  # 而改 kubelet config + 重启静态 Pod 动静大、收益小。
+  enabled: false
 
 nodeExporter:
   enabled: true

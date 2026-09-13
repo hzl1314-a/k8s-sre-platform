@@ -1,0 +1,41 @@
+[00:32:41] === 任务8 HPA 压测开始，已连接 8.155.129.89 ===
+[00:32:41] --- 压测前基线 ---
+[00:32:41] OOM排雷: NAME                                     RESTARTS   LASTSTATE
+currencyservice-6c6d8bd874-m8vmr         5          OOMKilled
+currencyservice-6c6d8bd874-t9zmd         5          OOMKilled
+paymentservice-564c94f55c-8tjch          4          OOMKilled
+paymentservice-564c94f55c-wc5ph          4          OOMKilled
+[00:32:42] HPA基线: frontend-hpa   Deployment/frontend   cpu: 14%/60%   2     8     2     27m
+[00:32:42] frontendPod: frontend-58c745c7-n4zpj                  21m          15Mi            
+frontend-58c745c7-vf752                  7m           14Mi
+[00:32:43] 商店延迟: 200 1.039178s
+[00:32:43] --- 启动压测 hey -z 5m -c 50 http://127.0.0.1:30080/ ---
+[00:32:43] hey 启动: LAUNCHED
+[00:32:43] ★ 副本数变化 None -> 8（TARGETS cpu:）
+[00:32:46] 副本 8  TARGETS cpu:
+[00:32:49] 副本 8  TARGETS cpu:
+[00:32:53] 副本 8  TARGETS cpu:
+[00:32:56] 副本 8  TARGETS cpu:
+[00:32:59] 慢采样# slow=1 frontendPods[frontend-58c745c7-n4zpj 15m; frontend-58c745c7-vf752 5m] 商店探测[200 3.059373]
+[00:33:02] 副本 8  TARGETS cpu:
+[00:33:05] 副本 8  TARGETS cpu:
+[00:33:08] 副本 8  TARGETS cpu:
+[00:33:11] 副本 8  TARGETS cpu:
+[00:33:14] 副本 8  TARGETS cpu:
+[00:33:18] 慢采样# slow=2 frontendPods[frontend-58c745c7-n4zpj 33m; frontend-58c745c7-vf752 29m] 商店探测[200 3.195287]
+[00:33:21] 副本 8  TARGETS cpu:
+[00:33:24] 副本 8  TARGETS cpu:
+[00:33:27] 副本 8  TARGETS cpu:
+[00:33:30] 副本 8  TARGETS cpu:
+[00:33:33] 副本 8  TARGETS cpu:
+[00:33:36] 慢采样# slow=3 frontendPods[frontend-58c745c7-829cs 6m; frontend-58c745c7-n4zpj 96m; frontend-58c745c7-vf752 64m] 商店探测[200 2.460219]
+[00:33:39] 副本 8  TARGETS cpu:
+[00:33:42] 副本 8  TARGETS cpu:
+[00:33:46] 副本 8  TARGETS cpu:
+[00:33:49] 副本 8  TARGETS cpu:
+[00:33:52] 副本 8  TARGETS cpu:
+[00:33:55] 慢采样# slow=4 frontendPods[frontend-58c745c7-829cs 0m; frontend-58c745c7-n4zpj 108m; frontend-58c745c7-vf752 61m] 商店探测[200 2.822343]
+[00:33:58] 副本 8  TARGETS cpu:
+[00:34:01] 副本 8  TARGETS cpu:
+[00:34:04] 副本 8  TARGETS cpu:
+[00:34:07] 副本 8  TARGETS cpu:

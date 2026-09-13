@@ -1,85 +1,87 @@
 # k8s-sre-platform 交接文档
 
-> **交接时间**：2026-09-13
+> **交接时间**：2026-09-14（最新一轮：任务 8、9 已执行完毕并留证）
 > **交接人**：上一任工程师（与 AI 协作完成）
 > **接收人**：下一任工程师
 > **阅读时间**：约 15 分钟。读完本文档即可独立继续，不需要翻历史聊天记录。
 
 ---
 
-## 零、上一轮会话交接摘要（2026-09-13 晚 · 先读这一节）
+## 零、上一轮会话交接摘要（2026-09-14 凌晨 · 先读这一节）
 
-**一句话**：任务 7（告警）已从「待执行」做到「完整收尾」，下一步是**任务 8**。
+**一句话**：任务 8（HPA + 压测）与任务 9（两场故障演练）已全部执行完毕、证据链齐全，
+下一步是**收尾三件事**：① Traefik 反亲和修复 → ② 任务 10（README + 简历）→ ③ push GitHub。
 本节是上一轮会话的浓缩，细节都在对应文档里，不需要翻历史聊天记录。
 
 ### 这轮做成了什么
 
 | 事项 | 结果 |
 |---|---|
-| 告警双通道验收 | **故障 → 邮件/钉钉投递 = T+74s**（验收线 120s）；4 场演练 82 / 70 / 73 / 70 秒 |
-| 截图 13-16 | 全部归档 `docs/screenshots/`（13 是**合成图**：UI FIRING 徽标 + `/api/v1/alerts` 原始 JSON + kubectl `frontend 0/0` 现场） |
-| 时间线与投递秒数 | 已回填 `docs/alerting.md` §4，可直接进 README / 简历 |
+| 任务 8：HPA + 压测 | hey 5m/c50 全自动压测：7426 请求全 200、24.66 req/s、P99 2.78s；扩容 2→3 @T+56s（CPU 80% 越阈值）、缩容 @负载结束+300s；副本数经 Prometheus 序列交叉验证。手册 `docs/autoscaling.md` 已回填实测时间线，截图 17/18/19 齐 |
+| kube-proxy 遗留闭环 | `kubeProxy.enabled: false` 已上云，ScrapeTargetDown 清零（三步验证全过，遗留清单 [x]） |
+| OOMKilled 实锤修复 | payment(Node) 静息 78% 贴 limit、currency(Go) 流量毛刺打穿 128Mi → 提到 request 128Mi / limit 256Mi，滚动更新后零重启。「监控第一次跑就抓到真问题」达成（遗留清单 [x]） |
+| 任务 9：两场故障演练 | 演练一（优雅排水 w1）：排水 11s、可用率 99.03%、业务告警未触发；演练二（w2 关机）：NotReady T+36s → 双通道告警 T+84s → 服务恢复 T+384s（中断 6m18s）→ RESOLVED 通知 T+502s。截图 chaos-01~05 六张全齐，`docs/chaos-drill.md` 已全部回填实测数据与面试口径 |
+| ★ 演练二王牌发现 | **Traefik 双副本同落 w2（preferred 软反亲和在 drain 场景失效，见 §5.4 #15）→ 入口层单点**：业务 Pod 在 w1 存活但流量进不来，整站中断 6m18s。「K8s 的 HA 是逐层的」面试口径已写进 chaos-drill.md |
+| 截图与通道 | HPA 17-19 + chaos-01~05 全部归档登记；Grafana 截图已自动化（`scripts/grafana-shot.mjs`），合成图有生成器先例 |
 
-### 这轮修掉的三个根因（都是现成的面试故事）
-
-1. **钉钉的 helm chart 已从 prometheus-community 下架**（仓库索引 / charts 目录 / 历史
-   release 资产三条证据核实）→ 改自维护清单 `manifests/alerts/dingtalk-webhook.yaml`；
-   该组件**不暴露 /metrics**，不能挂 ServiceMonitor（会造成永久 `up=0`）
-2. **values 里 5 个死配置键**（chart 90.1.1 中不存在，helm 静默忽略）+ 收口路由把
-   `severity=none` 的 InfoInhibitor 也发了邮件 → 删死键，并在路由层加
-   `severity=none → receiver discard`（**不删规则**：`general.rules` 里还住着 TargetDown）
-3. **★ 最隐蔽**：Operator 的 `alertmanagerConfigMatcherStrategy` 默认 `OnNamespace`，
-   会给 AlertmanagerConfig **每条路由**追加 `namespace = monitoring`，导致 `boutique`
-   的告警一条都匹配不上——症状极迷惑（Prometheus 正常 FIRING、Alertmanager 也收到了，
-   就是不发通知）。已设 `OnNamespaceExceptForAlertmanagerNamespace`，详见 §5.3 第 12 条
-
-### 投递时刻怎么取（机制迭代过两次，别用旧法）
-
-- ❌ **收件人界面**：邮箱与钉钉桌面客户端都只显示到**分钟**
-- ❌ **Alertmanager 日志**：`msg="Notify success"` 在「首次投递成功」时是 **Debug** 级别
-  （`notify/retry_stage.go`：`if i <= 1 { l.Debug(...) } else { l.Info(...) }`），
-  默认 `logLevel=info` 下 grep 整段日志**零命中**——真机踩过，机制第一次上云就失灵
-- ✅ **现行方案**：演练期间**每 2s 直连 Alertmanager `/metrics`** 采样
-  `alertmanager_notifications_total`，记录各通道**首次自增**时刻（精度 ±2s）。
-  实现在 `scripts/alert-drill.sh` 的 [8/8] 段；`--report` 只读复用 `alert-drill.log.samples`
-
-### ⚠️ 待拍板的遗留问题（本轮唯一没做完的决策）
-
-**`ScrapeTargetDown` 正在常驻 FIRING**：3 个节点的 kube-proxy 指标端点全部 `up==0`
-（kps 默认开启 kubeProxy 抓取，新版 kube-proxy 默认不暴露 10249）。
-不修的代价：每 6 小时一封 warning 邮件，且常驻告警会稀释真告警。二选一：
-
-- **推荐**：kps values 加 `kubeProxy: {enabled: false}` → `helm upgrade`
-  （改动小，可先本地 `helm template` 验证；改完 `ScrapeTargetDown` / `KubeProxyDown` 自动消失）
-- 或给 kube-proxy 打开指标：改 3 个节点的 config 并重启静态 Pod，动静大，不建议
-
-### 这轮新增的文件
+### 这轮新增的工具与文件
 
 | 文件 | 用途 |
 |---|---|
-| `docs/alerting.md` | S4 完整手册（部署 5 步 / 时间预算 / 链路分段排障 / 踩坑表） |
-| `scripts/deploy-task7.sh` | 一键部署 + 4 项当场验收（幂等，Secret 交互式输入不进历史） |
-| `scripts/alert-drill.sh` | 演练：自动时间线 + 逐通道投递判定 + 投递时刻采样；`--report` 只读回填 |
-| `scripts/diag-task7.sh` | 7 段一次取证的只读诊断（含绕过 Prometheus 的端到端注入测试） |
-| `scripts/validate-crd-fields.py` | 用**集群真实 CRD** 校验清单字段（防「字段被静默裁剪」） |
-| `manifests/alerts/*` | 告警规则 8 条 / AlertmanagerConfig / 钉钉转发清单 / 配置模板 |
+| `docs/autoscaling.md` | 任务 8 手册（8 步流程 / 实测时间线 / 踩坑表 / 面试要点） |
+| `scripts/hpa-drill.py` | 全自动压测：等回落基线 → hey → 3s 轮询 HPA → 缩容观察 → 报告落盘 |
+| `scripts/chaos-drill1.py` / `chaos-drill2.py` | 两场演练观测器（探针 + 节点/Pod/AM 计数轮询 + 时间线落盘；drill2 分 watch/resume 两阶段） |
+| `scripts/grafana-shot.mjs` | puppeteer + 本机 Chrome 无头登录 Grafana 截图（页面不认 basic auth，只能表单登录） |
+| `scripts/gen-hpa-shot-html.py` / `gen-chaos01-html.py` / `gen-chaos05-html.py` | 合成截图生成器（先例：截图 13；数据逐字取自日志） |
+| `docs/hpa-drill-timeline.log` / `docs/probe-drill*.log` / `docs/chaos-drill*-timeline.log` | 原始证据数据 |
+
+### 这轮踩的新坑（完整版在 autoscaling.md §6 / chaos-drill.md）
+
+1. **HPA TARGETS 按列 split 会错位**：`cpu: 11%/60%` 带空格，MAXPODS 被当副本数
+   （第一次压测 run1 报废的根因）→ 一律 jsonpath / json，别解析人类可读输出
+2. **apply 忘带 `-n` = 误建全套到 default ns**：识别信号是输出全 `created`（正常滚动应为
+   configured/unchanged）、Deployment AGE 不变、scp 实际失败（md5 不符）——见信号就停手查现场
+3. **Grafana 页面不认 URL basic auth**（API 认、页面 302 登录）；headless Chrome 带
+   `--disable-gpu` 时 uPlot canvas 不渲染（图例有、曲线无）
+4. **演练前必须盘点全节点 Pod 分布**：drain 替补不回流 + 无自动 rebalance，
+   曾出现 22 个业务 Pod 全堆 w2 的险情（直接关机 = 全灭剧本）
+
+### ⚠️ 下一步（按顺序三件事）
+
+1. ✅ **Traefik podAntiAffinity 修复（2026-09-14 02:22-02:36 已完成）**：
+   preferred→required + 控制面 toleration，双副本 **w2+cp** 分落两节点、探活 200。
+   闭环叙事见 `docs/chaos-drill.md`「修复与复验」，证据 `docs/traefik-affinity-fix.log`。
+   ⚠️ 过程备注：修复实际由**上一个会话在 02:22 用本会话备好的脚本抢先执行**（Revision 4），
+   本会话 02:27 同配置重放（Revision 5，SFTP md5 对齐 cp 文件与仓库）；
+   两个 Revision 的 values 经 `helm get values --all` diff 逐字节一致（见踩坑 #13/#14）
+2. **任务 10：README 收口 + 简历**：把实测数字写进根 README 与简历 bullet——
+   压测 24.66 req/s / P99 2.78s、演练可用率 99.03% 与 28.3%、告警触达 84s、
+   恢复通知 502s、排水 11s 等（素材全在两份手册里）
+3. **杂项**：仓库 push GitHub、`04-remote-kubectl.png` 补截（S1 欠账）
 
 ### 本机环境变化（比本文档旧版描述重要）
 
 - 本地代理 `127.0.0.1:7897` **已失效**；**直连正常**（用环境自带代理变量，别加 `-x`）
 - **GitHub release 资产下载不通**（302 后超时）；二进制走非 GitHub 官方源（helm → `get.helm.sh`）
-- 本机 SSH 到 ECS **需密码**（无免密钥）；AI 可用 paramiko 直连执行命令；
-  浏览器无头截图必须加 `--no-proxy-server`（否则系统代理把 127.0.0.1 拦掉）
-- 单条命令跑超过约 60 秒可能被工具链中断，长任务放后台执行
+- SSH 到 ECS **需密码**（无免密钥）；AI 用 paramiko 直连执行命令；
+  **传文件用 paramiko SFTP**（scp 在本机通道不稳定，曾静默失败）
+- **Grafana 凭据从集群 secret 取**（`kubectl -n monitoring get secret grafana-admin ...`），
+  用户口述凭据有笔误风险，以 secret 为准
+- Prometheus 直连走 **ClusterIP**（节点可路由；cp 的 `localhost:9090` 只在用户手动
+  port-forward 时才通，不要当成常驻通道）
+- **Bash 工具 heredoc 会吃反斜杠**（`\n`→`/n`、`\s`→`/s`，静默不报错）：
+  含转义/正则的代码一律先用 Write 写成文件再执行
 
 ### 给下一任的开场提示（新会话直接把这段粘贴给 AI 即可）
 
 > 我在接着做 k8s-sre-platform 求职作品集项目（仓库在 `E:/yes/k8s-sre-platform`）。
-> 请先通读 `docs/HANDOFF.md`——尤其「零、上一轮会话交接摘要」和第五节踩坑表，
-> 然后从**任务 8**（metrics-server + HPA + hey 压测）开始。任务 7 已完整收尾，
-> 手册在 `docs/alerting.md`。动手前先提醒我两件事：① 有一个待拍板的遗留问题
-> （kube-proxy 抓取目标全挂，见 HANDOFF 零节）；② 按项目约定，helm values 必须先本地
-> `helm template` 验证、自定义资源必须先过 `scripts/validate-crd-fields.py`。
+> 请先通读 `docs/HANDOFF.md`——尤其「零、上一轮会话交接摘要」和第五节踩坑表。
+> 任务 8（HPA 压测）和任务 9（两场故障演练）已执行完毕、证据链齐全
+> （手册：`docs/autoscaling.md`、`docs/chaos-drill.md`）。接下来按顺序做三件事：
+> ① Traefik podAntiAffinity 修复（演练二发现入口层单点，见 HANDOFF 零节和遗留问题清单）；
+> ② 任务 10：README 收口 + 简历回填实测数字；③ 仓库 push GitHub。
+> 动手前先提醒我：按项目约定，helm values 必须先本地 `helm template` 验证、
+> 自定义资源必须先过 `scripts/validate-crd-fields.py`；SSH/凭据见 HANDOFF 第三节。
 
 ---
 
@@ -95,7 +97,7 @@
 
 ---
 
-## 二、当前进度（截至 2026-09-13）
+## 二、当前进度（截至 2026-09-14 凌晨）
 
 | 任务 | 内容 | 状态 |
 |---|---|---|
@@ -107,8 +109,8 @@
 | 5 | Traefik Ingress + NodePort 暴露（30080/30443/30800） | ✅ |
 | 6 | 可观测性（kube-prometheus-stack + Loki + Promtail + 自建看板） | ✅ |
 | **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟩 **已完成并收尾**：双通道投递 **T+74s**（验收线 120s），时间线见 `docs/alerting.md` §4，截图 13-16 齐全 |
-| 8 | metrics-server + HPA 自动扩缩容 + hey 压测 | ⬜ |
-| 9 | 故障演练（drain 优雅排水 / 硬宕机） | ⬜ |
+| **8** | **metrics-server + HPA 自动扩缩容 + hey 压测** | 🟩 **完成**：压测 7426 请求全 200 / 24.66 req/s，扩容 T+56s；截图 17-19，见 `docs/autoscaling.md` |
+| **9** | **故障演练（drain 优雅排水 / 节点关机）** | 🟩 **完成**：可用率 99.03% / 28.3%，告警全生命周期闭环 T+84s→T+502s；截图 chaos-01~05，见 `docs/chaos-drill.md` |
 | 10 | README 收口 + 简历定稿 | ⬜ |
 
 详细计划见 `docs/superpowers/plans/2026-09-12-k8s-job-project.md`（上一级仓库 `E:\yes\docs\`）。
@@ -268,6 +270,9 @@ k8s-sre-platform/
 | 9 | **自定义资源的字段错误不会报错**，会被 CRD **静默裁剪**。上手写任何 `PrometheusRule` / `AlertmanagerConfig` / `ServiceMonitor` 之前，先用 `scripts/validate-crd-fields.py` 过一遍（本地就能跑，见 `docs/alerting.md` §3 第 3 步） |
 | 10 | **脚本被工具写成 CRLF → Linux 上解析期直接崩**。症状：`line 18: $'\r': command not found`、`: invalid option nameline 19: set: pipefail`、`syntax error near unexpected token \`$'in\r'\``。**不是第一行报错、也完全不像行尾符问题**，极易误判成脚本写坏了。Windows 侧一切正常（Git Bash 容忍 CRLF、`bash -n` 也过） | scp 前自检：`grep -lU $'\r' scripts/*.sh`；命中就 `sed -i 's/\r$//' <文件>`。注意 `.gitattributes` 只在 add/checkout 规范化，**挡不住工具往工作区写 CRLF**，而 scp 传的是工作区文件 |
 | 11 | **读第三方 API 前先核对 OpenAPI**。实例：以为 Alertmanager 的 `/api/v2/status` 有 `configYAML`，实际**没有这个字段**，写它会静默拿到 `null`（不报错），导致验收项连续空转 | 正确路径是 `.config.original`。核对方式：读上游仓库的 `api/v2/openapi.yaml`，别按记忆写字段名 |
+| 13 | **同一个项目开两个 AI 会话并行操作 = 抢跑与互相覆盖**：上一会话没关，本会话备好修复物料（values + 脚本）后，它直接拿密码抢先执行（helm Revision 4），本会话随后又重放一遍（Revision 5） | 修好的配置恰好幂等 + helm Revision 历史可追溯，才没出事；`helm get values --revision 4/5` diff 确认两次逐字节一致 | 开新会话前关掉旧的；上云动作前先 `helm history` 看一眼有没有人动过 |
+| 14 | **会留证据的脚本日志禁止用覆盖模式写**：修复脚本第二次运行把首次运行的原始日志（含「双副本同落 w1」修复前基线段）覆盖丢失 | 靠 chaos-drill.md 的逐字回填 + helm history / kubectl events / RS 创建时间重建了证据链，并在日志里追加了重建注释 | 日志一律追加（`open('a')`）或文件名带时间戳；确需覆盖前先改名备份 |
+| 15 | **「Deployment 无反亲和」的目视结论未必准确**：演练复盘时凭截图断言 Traefik 无反亲和，实际 values 从脚手架起就有 preferred 软反亲和，真实根因是「cp 污点不可入 → drain 时唯一可调度节点 → 软反亲和让位 → 无回流」 | `kubectl get deploy -o jsonpath='{.spec.template.spec.affinity}'` 一步就能核实，别靠记忆下结论 | 复盘根因前先看线上 spec 原文，表述错会让面试追问穿帮 |
 | 12 | **同一条消息里对同一个文件并发做多次编辑会丢掉改动**：本次给 `alert-drill.sh` 加参数时，同批的两处编辑只落盘了一处（工具回「成功」但文件里没有），直到桩测试报出 `REPORT: unbound variable` 才暴露 | 一次性用脚本改完 + 逐条断言，改完回读文件确认 | 每次编辑都基于同一份原始内容「读-改-写」，后写的覆盖先写的 | 同一文件的多处改动合并成**一次原子操作**（本仓库用 python 改写 + `assert s.count(old)==1`）。**不要相信「成功」提示，要回读验证** |
 
 ---
@@ -343,20 +348,50 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
 > 4. 转发组件**不暴露 `/metrics`**，不能挂 ServiceMonitor（会造成永久 `up=0` 并触发自检规则）
 
 
-### 任务 8：HPA 与压测
+### 任务 8：HPA 与压测（🟩 压测与采集全部完成，2026-09-14 凌晨；待回填手册+收尾登记）
 
-1. metrics-server 清单已备好且已 patch：`downloads/metrics-server-components-patched.yaml`，
-   镜像地址需按 §5.2 换源后 `kubectl apply`；验收 `kubectl top nodes` 有输出
-2. `kubectl apply -f manifests/hpa/frontend-hpa.yaml`（min2/max8/CPU60%）
-3. 本机装 hey 压测：`hey -z 5m -c 50 http://8.155.129.89:30080/`
-4. 压测期间 `kubectl get hpa -n boutique -w` 记录扩容；看板「业务 QPS / Pod CPU」同屏录屏
+> ★ **执行手册：`docs/autoscaling.md`**（含 8 步流程 / 排障速查 / 时间预算 / 面试要点）
+
+本地准备已全部完成（手册第 0~2 步随时可执行）：
+1. ✅ kube-proxy 遗留问题已拍板「关抓取」：values 已改 `kubeProxy.enabled: false`，
+   本地渲染验证 diff 干净（只消失 4 个 kube-proxy 资源，其余逐字节不变）
+2. ✅ metrics-server 清单已换源 `k8s.m.daocloud.io`（token 流程验证 HTTP 200）+ YAML 校验通过
+3. ✅ HPA 清单校验通过（autoscaling/v2，min2/max8/CPU60%，扩快缩慢 behavior 已配）
+4. ⚠️ **压测方案已改**：hey 改装在 **cp 节点**（apt 装 Go + goproxy.cn 编译 v0.1.4），
+   打 `http://127.0.0.1:30080/`——本机装不上 hey（GitHub release 不通 + 无 Go），
+   且本机压公网有「带宽先于 CPU 饱和、HPA 不触发」的验收风险，详见手册 §1.1
 5. 验收：完整记录「QPS↑ → CPU 超阈值 → 副本 2→N → 回落」全周期，截图 17-19
 
-### 任务 9：故障演练（项目王牌）
+**执行结果（2026-09-14 00:39-00:51，drill 脚本全自动）**：
+- 压测：hey -z 5m -c 50 → 127.0.0.1:30080，7426 请求**全部 200**，24.66 req/s，P99 2.78s
+- 扩容：00:40:36（压测开始 +56s）CPU 80% 越阈值 → 2→3；随后 3 副本求衡在 ~57%
+- 缩容：00:50:12（负载结束后 300s 稳定窗口到期）→ 3→2
+- 交叉验证：Prometheus query_range 副本数序列与 3s 轮询日志一致（各差 1 个 15s 采样步）
+- 证据链：`docs/hpa-drill-timeline.log`（全程带时间戳）、`docs/hpa-hey-result.txt`、截图 17-19 ✅
+- 工具沉淀：`scripts/hpa-drill.py`（全自动压测+观测）、`scripts/grafana-shot.mjs`（puppeteer+本机
+  Chrome 无头登录 Grafana 截图——Grafana 页面不认 basic auth，只能表单登录）、
+  `scripts/gen-hpa-shot-html.py`（17/18 合成图生成器）
+- 踩坑素材：① run1 的监控脚本把 HPA TARGETS `cpu: 11%/60%`（带空格）按列 split，
+  把 MAXPODS 当副本数——改 jsonpath 根治（和 hey 前排障是同类坑）；
+  ② currencyservice/paymentservice 各 4-5 次 OOMKilled 实锤（压测前后快照均在案）
 
-按 `docs/chaos-drill.md` 逐步走：开探测脚本 `scripts/availability-probe.sh` + 录屏 →
-`kubectl drain k8s-w1` 优雅排水 → 控制台关机 w2 硬宕机 → `uncordon` 恢复 → 写复盘。
-截图用 `chaos-01~04` 前缀。
+### 任务 9：故障演练（✅ 完整收官，2026-09-14 01:15-01:56；chaos-01~05 六张截图全齐）
+
+- **演练一（优雅排水 w1）✅**：排水 11s，可用率 99.03%（309 请求/306×200），
+  业务告警未触发（11s << for:1m）。意外素材：AM 驻留 w1，驱逐瞬间
+  AlertmanagerClusterDown 自报 + 计数器随 Pod 迁移清零。截图 chaos-01（合成）。
+- **演练二（w2 关机）✅**：NotReady T+36s → 双通道告警 T+84s（邮箱截图 chaos-02、
+  钉钉 chaos-03）→ taint 驱逐 T+338s → 服务恢复 T+384s（中断 6m18s）→
+  节点 Ready T+481s → RESOLVED 通知 T+502s。可用率 28.3%。
+- **★ 最值钱的发现**：Traefik 双副本全在 w2（软反亲和在 drain 场景失效 + 替补不回流）
+  → 入口层单点，业务 Pod 在 w1 存活但流量进不来。业务层/入口层/监控层/存储层
+  每层要单独做「双副本跨节点」检查——已写进 chaos-drill.md 面试口径和改进项表。
+- 证据：chaos-05 合成图（时间线+可用性条）、chaos-drill2-timeline.log、probe-drill2.log；
+  chaos-drill.md 演练二章节已全部回填实测数据。
+- 恢复证据：`chaos-04-recovery.png`（邮件 RESOLVED 01:49）+
+  `chaos-04-recovery-dingtalk.png`（钉钉 01:49）已归档登记——**告警触发→通知→恢复全生命周期闭环**。
+- **改进项 #5 已闭环（2026-09-14 02:22-02:36）**：preferred→required + 控制面 toleration，
+  复验 w2+cp、探活 200，见 chaos-drill.md「修复与复验」与 `docs/traefik-affinity-fix.log`。
 
 ### 任务 10：README 收口 + 简历
 
@@ -364,13 +399,25 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
 
 ### 遗留问题清单
 
+- [x] **Traefik 双副本同节点（已修复并复验，2026-09-14 02:22-02:36）**：
+      根因是 preferred（软）反亲和在 drain 场景失效——cp 污点不可入、替补只能落唯一可用
+      节点、无自动回流（早期「无反亲和」表述不准确，values 自脚手架起就有软反亲和）。
+      修复 = preferred→required + 控制面 toleration；复验双副本 w2+cp、探活 200。
+      完整闭环：chaos-drill.md「修复与复验」+ `docs/traefik-affinity-fix.log`
+      （rev4 原始日志被覆盖，已重建注释并补稳态复验）
 - [ ] `04-remote-kubectl.png` 未截（S1 欠账，做法见截图索引里的说明）
-- [ ] **有 Pod 累计重启 2-3 次**，待查是否 OOMKilled：
-      `kubectl get pods -n boutique -o custom-columns='NAME:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount,LASTSTATE:.status.containerStatuses[*].lastState.terminated.reason'`
-      （若是 OOM 就调 limit，并写进踩坑记录——监控第一次跑就抓到真问题，是加分项）
-- [ ] **kube-proxy 抓取目标全挂（待拍板，见零节）**：`ScrapeTargetDown` 常驻 FIRING，
-      `up==0` 的是 3 个节点的 kube-proxy:10249；推荐 kps values 里
-      `kubeProxy: {enabled: false}` 后 `helm upgrade`
+- [x] **有 Pod 累计重启 2-3 次（OOMKilled，已修复 2026-09-14 凌晨）**：
+      实锤 currencyservice / paymentservice 各 4-5 次；payment(Node) 静息 92-102Mi
+      贴 128Mi limit（懒 GC 顶到 cgroup 才回收，OOM 必然），currency(Go) 流量毛刺
+      打穿 128Mi → 两者提到 request 128Mi / limit 256Mi（`scripts/patch-mem-limits.py`
+      原子改清单），滚动更新后零重启、商店 200。排查中连带修掉一次「apply 忘带 -n
+      误建全套到 default ns」事故（delete -f 精确清理 + SFTP 重传 md5 校验），
+      全程见 `docs/autoscaling.md` §6 踩坑表——「监控第一次跑就抓到真问题」达成
+- [x] **kube-proxy 抓取目标全挂（已闭环 2026-09-14 00:05）**：
+      `kubeProxy.enabled: false` 已上云，三步验证全过：ServiceMonitor 已删、
+      targets 无 kube-proxy、`up == 0` 空且 ScrapeTargetDown 清零。
+      本地渲染 diff 验证先例（只消失 4 个资源）保留在
+      `downloads/render-kps-{before,after}.out`
 - [ ] 仓库还没 push 到 GitHub
 
 ---

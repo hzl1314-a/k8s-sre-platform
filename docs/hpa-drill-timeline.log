@@ -1,0 +1,186 @@
+[00:35:16] === 任务8 HPA 压测开始，已连接 8.155.129.89 ===
+[00:35:16] --- 压测前基线 ---
+[00:35:16] OOM排雷: NAME                                     RESTARTS   LASTSTATE
+currencyservice-6c6d8bd874-m8vmr         5          OOMKilled
+currencyservice-6c6d8bd874-t9zmd         5          OOMKilled
+paymentservice-564c94f55c-8tjch          4          OOMKilled
+paymentservice-564c94f55c-wc5ph          4          OOMKilled
+[00:35:16] HPA基线: frontend-hpa   Deployment/frontend   cpu: 7%/60%   2     8     3     30m
+[00:35:17] frontendPod: frontend-58c745c7-829cs                  1m           14Mi            
+frontend-58c745c7-n4zpj                  13m          16Mi            
+frontend-58c745c7-vf752                  7m           15Mi
+[00:35:18] 商店延迟: 200 1.039756s
+[00:35:18] --- 等待 HPA 回到 2 副本基线（最长 10 分钟）---
+[00:35:18] 当前 replicas=3 cpu=7%，继续等待…
+[00:35:38] 当前 replicas=3 cpu=8%，继续等待…
+[00:35:58] 当前 replicas=3 cpu=7%，继续等待…
+[00:36:18] 当前 replicas=3 cpu=6%，继续等待…
+[00:36:38] 当前 replicas=3 cpu=8%，继续等待…
+[00:36:58] 当前 replicas=3 cpu=8%，继续等待…
+[00:37:19] 当前 replicas=3 cpu=8%，继续等待…
+[00:37:39] 当前 replicas=3 cpu=8%，继续等待…
+[00:37:59] 当前 replicas=3 cpu=7%，继续等待…
+[00:38:19] 当前 replicas=3 cpu=8%，继续等待…
+[00:38:39] 当前 replicas=3 cpu=8%，继续等待…
+[00:38:59] 当前 replicas=3 cpu=7%，继续等待…
+[00:39:19] 当前 replicas=3 cpu=7%，继续等待…
+[00:39:39] 基线确认：replicas=2 cpu=10%
+[00:39:39] hey 前置清理: 无残留 hey
+[00:39:39] --- 启动压测 hey -z 5m -c 50 http://127.0.0.1:30080/ ---
+[00:39:40] hey 启动: LAUNCHED
+[00:39:40] ★ 副本数变化 None -> 2（TARGETS cpu:10%）
+[00:39:43] 副本 2  TARGETS cpu:10%
+[00:39:46] 副本 2  TARGETS cpu:9%
+[00:39:49] 副本 2  TARGETS cpu:9%
+[00:39:52] 副本 2  TARGETS cpu:9%
+[00:39:56] 慢采样# slow=1 frontendPods[frontend-58c745c7-n4zpj 12m; frontend-58c745c7-vf752 6m] 商店探测[200 2.995351]
+[00:39:59] 副本 2  TARGETS cpu:9%
+[00:40:02] 副本 2  TARGETS cpu:52%
+[00:40:05] 副本 2  TARGETS cpu:52%
+[00:40:08] 副本 2  TARGETS cpu:52%
+[00:40:11] 副本 2  TARGETS cpu:52%
+[00:40:14] 慢采样# slow=2 frontendPods[frontend-58c745c7-n4zpj 58m; frontend-58c745c7-vf752 47m] 商店探测[200 2.798863]
+[00:40:17] 副本 2  TARGETS cpu:77%
+[00:40:20] 副本 2  TARGETS cpu:77%
+[00:40:23] 副本 2  TARGETS cpu:77%
+[00:40:27] 副本 2  TARGETS cpu:77%
+[00:40:30] 副本 2  TARGETS cpu:77%
+[00:40:33] 慢采样# slow=3 frontendPods[frontend-58c745c7-n4zpj 93m; frontend-58c745c7-vf752 61m] 商店探测[200 3.099909]
+[00:40:36] ★ 副本数变化 2 -> 3（TARGETS cpu:80%）
+[00:40:39] 副本 3  TARGETS cpu:80%
+[00:40:42] 副本 3  TARGETS cpu:80%
+[00:40:45] 副本 3  TARGETS cpu:80%
+[00:40:49] 副本 3  TARGETS cpu:80%
+[00:40:52] 慢采样# slow=4 frontendPods[frontend-58c745c7-n4zpj 101m; frontend-58c745c7-vf752 59m; frontend-58c745c7-zg4wb 0m] 商店探测[200 3.077240]
+[00:40:55] 副本 3  TARGETS cpu:80%
+[00:40:58] 副本 3  TARGETS cpu:80%
+[00:41:01] 副本 3  TARGETS cpu:64%
+[00:41:04] 副本 3  TARGETS cpu:64%
+[00:41:07] 副本 3  TARGETS cpu:64%
+[00:41:11] 慢采样# slow=5 frontendPods[frontend-58c745c7-n4zpj 70m; frontend-58c745c7-vf752 59m; frontend-58c745c7-zg4wb 41m] 商店探测[200 3.344971]
+[00:41:14] 副本 3  TARGETS cpu:64%
+[00:41:17] 副本 3  TARGETS cpu:57%
+[00:41:20] 副本 3  TARGETS cpu:57%
+[00:41:24] 副本 3  TARGETS cpu:57%
+[00:41:27] 副本 3  TARGETS cpu:57%
+[00:41:30] 慢采样# slow=6 frontendPods[frontend-58c745c7-n4zpj 67m; frontend-58c745c7-vf752 47m; frontend-58c745c7-zg4wb 58m] 商店探测[200 3.196929]
+[00:41:33] 副本 3  TARGETS cpu:57%
+[00:41:36] 副本 3  TARGETS cpu:57%
+[00:41:39] 副本 3  TARGETS cpu:57%
+[00:41:43] 副本 3  TARGETS cpu:57%
+[00:41:46] 副本 3  TARGETS cpu:57%
+[00:41:49] 慢采样# slow=7 frontendPods[frontend-58c745c7-n4zpj 69m; frontend-58c745c7-vf752 45m; frontend-58c745c7-zg4wb 59m] 商店探测[200 3.090310]
+[00:41:52] 副本 3  TARGETS cpu:57%
+[00:41:55] 副本 3  TARGETS cpu:57%
+[00:41:58] 副本 3  TARGETS cpu:57%
+[00:42:01] 副本 3  TARGETS cpu:57%
+[00:42:05] 副本 3  TARGETS cpu:57%
+[00:42:07] 慢采样# slow=8 frontendPods[frontend-58c745c7-n4zpj 71m; frontend-58c745c7-vf752 45m; frontend-58c745c7-zg4wb 57m] 商店探测[200 2.532145]
+[00:42:11] 副本 3  TARGETS cpu:57%
+[00:42:14] 副本 3  TARGETS cpu:57%
+[00:42:17] 副本 3  TARGETS cpu:58%
+[00:42:20] 副本 3  TARGETS cpu:58%
+[00:42:23] 副本 3  TARGETS cpu:58%
+[00:42:26] 慢采样# slow=9 frontendPods[frontend-58c745c7-n4zpj 71m; frontend-58c745c7-vf752 46m; frontend-58c745c7-zg4wb 58m] 商店探测[200 2.788783]
+[00:42:29] 副本 3  TARGETS cpu:58%
+[00:42:32] 副本 3  TARGETS cpu:58%
+[00:42:35] 副本 3  TARGETS cpu:58%
+[00:42:38] 副本 3  TARGETS cpu:58%
+[00:42:42] 副本 3  TARGETS cpu:58%
+[00:42:45] 慢采样# slow=10 frontendPods[frontend-58c745c7-n4zpj 71m; frontend-58c745c7-vf752 44m; frontend-58c745c7-zg4wb 61m] 商店探测[200 2.868842]
+[00:42:48] 副本 3  TARGETS cpu:56%
+[00:42:51] 副本 3  TARGETS cpu:56%
+[00:42:54] 副本 3  TARGETS cpu:56%
+[00:42:57] 副本 3  TARGETS cpu:56%
+[00:43:00] 副本 3  TARGETS cpu:56%
+[00:43:04] 慢采样# slow=11 frontendPods[frontend-58c745c7-n4zpj 70m; frontend-58c745c7-vf752 43m; frontend-58c745c7-zg4wb 60m] 商店探测[200 3.126358]
+[00:43:07] 副本 3  TARGETS cpu:57%
+[00:43:10] 副本 3  TARGETS cpu:57%
+[00:43:13] 副本 3  TARGETS cpu:57%
+[00:43:16] 副本 3  TARGETS cpu:57%
+[00:43:19] 副本 3  TARGETS cpu:57%
+[00:43:22] 慢采样# slow=12 frontendPods[frontend-58c745c7-n4zpj 66m; frontend-58c745c7-vf752 47m; frontend-58c745c7-zg4wb 59m] 商店探测[200 2.978876]
+[00:43:26] 副本 3  TARGETS cpu:57%
+[00:43:29] 副本 3  TARGETS cpu:57%
+[00:43:32] 副本 3  TARGETS cpu:55%
+[00:43:35] 副本 3  TARGETS cpu:55%
+[00:43:38] 副本 3  TARGETS cpu:55%
+[00:43:41] 慢采样# slow=13 frontendPods[frontend-58c745c7-n4zpj 68m; frontend-58c745c7-vf752 44m; frontend-58c745c7-zg4wb 54m] 商店探测[200 2.887461]
+[00:43:44] 副本 3  TARGETS cpu:55%
+[00:43:47] 副本 3  TARGETS cpu:56%
+[00:43:50] 副本 3  TARGETS cpu:56%
+[00:43:54] 副本 3  TARGETS cpu:56%
+[00:43:57] 副本 3  TARGETS cpu:56%
+[00:44:00] 慢采样# slow=14 frontendPods[frontend-58c745c7-n4zpj 68m; frontend-58c745c7-vf752 45m; frontend-58c745c7-zg4wb 56m] 商店探测[200 2.906484]
+[00:44:03] 副本 3  TARGETS cpu:59%
+[00:44:06] 副本 3  TARGETS cpu:59%
+[00:44:09] 副本 3  TARGETS cpu:59%
+[00:44:12] 副本 3  TARGETS cpu:59%
+[00:44:15] 副本 3  TARGETS cpu:59%
+[00:44:19] 慢采样# slow=15 frontendPods[frontend-58c745c7-n4zpj 70m; frontend-58c745c7-vf752 47m; frontend-58c745c7-zg4wb 59m] 商店探测[200 3.091224]
+[00:44:22] 副本 3  TARGETS cpu:58%
+[00:44:25] 副本 3  TARGETS cpu:58%
+[00:44:28] 副本 3  TARGETS cpu:58%
+[00:44:31] 副本 3  TARGETS cpu:57%
+[00:44:34] 副本 3  TARGETS cpu:57%
+[00:44:38] 慢采样# slow=16 frontendPods[frontend-58c745c7-n4zpj 70m; frontend-58c745c7-vf752 46m; frontend-58c745c7-zg4wb 57m] 商店探测[200 3.638791]
+[00:44:41] 副本 3  TARGETS cpu:57%
+[00:44:44] 副本 3  TARGETS cpu:57%
+[00:44:48] 副本 3  TARGETS cpu:56%
+[00:44:51] 副本 3  TARGETS cpu:56%
+[00:44:54] 副本 3  TARGETS cpu:56%
+[00:44:55] 慢采样# slow=17 frontendPods[frontend-58c745c7-n4zpj 64m; frontend-58c745c7-vf752 48m; frontend-58c745c7-zg4wb 57m] 商店探测[200 1.041637]
+[00:44:58] 副本 3  TARGETS cpu:56%
+[00:45:01] 副本 3  TARGETS cpu:23%
+[00:45:04] 副本 3  TARGETS cpu:23%
+[00:45:07] 副本 3  TARGETS cpu:23%
+[00:45:11] 副本 3  TARGETS cpu:23%
+[00:45:12] 慢采样# slow=18 frontendPods[frontend-58c745c7-n4zpj 42m; frontend-58c745c7-vf752 27m; frontend-58c745c7-zg4wb 1m] 商店探测[200 1.047179]
+[00:45:15] 副本 3  TARGETS cpu:23%
+[00:45:18] 副本 3  TARGETS cpu:7%
+[00:45:21] 副本 3  TARGETS cpu:7%
+[00:45:24] 副本 3  TARGETS cpu:7%
+[00:45:27] 副本 3  TARGETS cpu:7%
+[00:45:29] 慢采样# slow=19 frontendPods[frontend-58c745c7-n4zpj 12m; frontend-58c745c7-vf752 8m; frontend-58c745c7-zg4wb 1m] 商店探测[200 1.118898]
+[00:45:32] 副本 3  TARGETS cpu:8%
+[00:45:35] 副本 3  TARGETS cpu:8%
+[00:45:38] 副本 3  TARGETS cpu:8%
+[00:45:41] 副本 3  TARGETS cpu:8%
+[00:45:44] 副本 3  TARGETS cpu:8%
+[00:45:46] 慢采样# slow=20 frontendPods[frontend-58c745c7-n4zpj 17m; frontend-58c745c7-vf752 7m; frontend-58c745c7-zg4wb 1m] 商店探测[200 1.182704]
+[00:45:49] 副本 3  TARGETS cpu:7%
+[00:45:52] 副本 3  TARGETS cpu:7%
+[00:45:55] 副本 3  TARGETS cpu:7%
+[00:45:58] 副本 3  TARGETS cpu:7%
+[00:46:01] 副本 3  TARGETS cpu:7%
+[00:46:02] 慢采样# slow=21 frontendPods[frontend-58c745c7-n4zpj 12m; frontend-58c745c7-vf752 9m; frontend-58c745c7-zg4wb 2m] 商店探测[200 0.101791]
+[00:46:05] 副本 3  TARGETS cpu:7%
+[00:46:08] 副本 3  TARGETS cpu:7%
+[00:46:11] --- 压测时间窗结束，取 hey 报告 ---
+[00:46:11] hey 输出已存 E:/yes/k8s-sre-platform/docs/hpa-hey-result.txt（903 字符）
+[00:46:11] --- 缩容观察期 ---
+[00:46:11] ★ 副本数变化 None -> 3（TARGETS cpu:7%）
+[00:46:31] 副本 3  TARGETS cpu:7%
+[00:46:51] 副本 3  TARGETS cpu:7%
+[00:47:12] 副本 3  TARGETS cpu:6%
+[00:47:32] 副本 3  TARGETS cpu:7%
+[00:47:52] 副本 3  TARGETS cpu:7%
+[00:48:12] 副本 3  TARGETS cpu:8%
+[00:48:32] 副本 3  TARGETS cpu:5%
+[00:48:52] 副本 3  TARGETS cpu:6%
+[00:49:12] 副本 3  TARGETS cpu:7%
+[00:49:32] 副本 3  TARGETS cpu:8%
+[00:49:52] 副本 3  TARGETS cpu:7%
+[00:50:12] ★ 副本数变化 3 -> 2（TARGETS cpu:11%）
+[00:50:33] 副本 2（稳定计数 1/3）
+[00:50:53] 副本 2（稳定计数 2/3）
+[00:51:13] 副本 2（稳定计数 3/3）
+[00:51:33] --- 收尾状态 ---
+[00:51:33] HPA终态: frontend-hpa   Deployment/frontend   cpu: 10%/60%   2     8     2     46m
+[00:51:33] frontendPod: frontend-58c745c7-n4zpj                  13m          15Mi            
+frontend-58c745c7-vf752                  7m           15Mi
+[00:51:33] 节点水位: NAME     CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%   
+k8s-cp   136m         6%     2239Mi          63%       
+k8s-w1   149m         3%     4303Mi          57%       
+k8s-w2   401m         10%    3419Mi          46%
+[00:51:33] === 压测流程结束 ===

@@ -34,22 +34,37 @@ hub:
   enabled: false
 
 # -----------------------------------------------------------------------------
-# 副本与调度：2 副本 + 软反亲和
-# 入口是流量必经之路，单副本 = 一个节点挂了入口就全挂。
-# 反亲和用 preferred 而不是 required，理由见 manifests/boutique/README.md
+# 副本与调度：2 副本 + **required（硬）反亲和** + 控制面容忍
+#
+# ★ 2026-09-14 演练二复盘修复（chaos-drill.md 改进项 #5）：
+#   此前是 preferred（软）反亲和——初始安装时确实分落 w1/w2，但演练一 drain w1 时，
+#   控制面带 NoSchedule 污点进不去、当时唯一可调度节点只剩 w2，软反亲和让位，
+#   替补落 w2；K8s 无自动 rebalance，双副本从此同节点。演练二 w2 关机时
+#   入口层全灭（整站中断 6m18s，业务层却存活）。
+#   修法两件套：
+#     1. required：调度期强制不同节点——任一 worker 挂掉，另一节点副本必然存活
+#     2. toleration：替补 Pod 可落控制面——故障期间保持 2 副本、零人工干预
+#   （required 单独用也可消除全灭：另一半容量在存活节点继续服务，
+#    因为 NodePort 全节点监听 + externalTrafficPolicy: Cluster）
 # -----------------------------------------------------------------------------
 deployment:
   replicas: 2
 
 affinity:
   podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          topologyKey: kubernetes.io/hostname
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: traefik
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - topologyKey: kubernetes.io/hostname
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
+
+# kubeadm 默认给控制面打 node-role.kubernetes.io/control-plane:NoSchedule，
+# 不加容忍则故障替补只能 Pending 等节点回来（半容量扛过故障窗口）。
+# 实验室 3 节点集群的取舍：入口组件请求量极小（100m/128Mi），值得换全容量自愈。
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
 
 # -----------------------------------------------------------------------------
 # 入口端口：绑定固定 NodePort
