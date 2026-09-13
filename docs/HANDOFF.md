@@ -30,7 +30,7 @@
 | 4 | Online Boutique 上线（22 Pod、副本 2、反亲和） | ✅ |
 | 5 | Traefik Ingress + NodePort 暴露（30080/30443/30800） | ✅ |
 | 6 | 可观测性（kube-prometheus-stack + Loki + Promtail + 自建看板） | ✅ |
-| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟨 **凭据已验证；配置就绪，待执行部署 + 演练**（`docs/alerting.md`） |
+| **7** | **告警规则与双通道触达（邮箱 + 钉钉）** | 🟨 **已上云；邮件通道通、钉钉待定位**（`docs/alerting.md`） |
 | 8 | metrics-server + HPA 自动扩缩容 + hey 压测 | ⬜ |
 | 9 | 故障演练（drain 优雅排水 / 硬宕机） | ⬜ |
 | 10 | README 收口 + 简历定稿 | ⬜ |
@@ -170,6 +170,9 @@ k8s-sre-platform/
 | 6 | **指标标签被改名 `exported_service`** | 抓取目标自带 `service` 标签冲突时，`honor_labels=false` 会给指标标签加 `exported_` 前缀。**看板查询必须用 `exported_service`** |
 | 7 | PromQL 无序列返回空 | 零 5xx 时 `code=~"5.."` 匹配不到序列 → 显示 No data 而非 0%。惯用法：`or 0 * 总量` |
 | 8 | **Grafana provisioning 只在启动时应用** | 数据源 ConfigMap 后续变更必须 `kubectl rollout restart deployment` 才生效 |
+| 9 | **values 里的键名不存在时 helm 不报错** | `defaultRules.rules` 只接受**规则文件名**键（general / kubernetesResources / node …）。曾写的 `infoInhibitor` / `watchdog` / `KubeMemoryOvercommit` / `KubeCPUOvercommit` / `CPUThrottlingHigh` 全是死配置，静默忽略。改 values 前先在 chart 包里 `grep` 一下键名 |
+| 10 | **apply 完立刻断言「没生效」必然误报** | Operator 写规则文件 + config-reloader 触发 reload + Prometheus 重读，官方预期**最长 1 分钟**；生成 Alertmanager 配置同理。校验脚本必须轮询等待，不要 apply 后 sleep 5 就判定 |
+| 11 | **要不要通知 ≠ 规则要不要触发** | 用 Alertmanager 的路由表达「谁该收到什么」，别去删规则。例：`severity = none` 的元告警（InfoInhibitor）在收口路由下会污染收件箱，正确做法是加一条 `→ receiver discard` 的路由（空接收器即官方支持的丢弃写法），而不是关掉整组规则（`general.rules` 里还有 TargetDown） |
 
 ### 5.4 工具使用类（给「人」的提醒）
 
@@ -219,6 +222,27 @@ k8s-sre-platform/
 > 2. 排查建议里的 `sum by (service)` → 必须用 `exported_service`（标签被改名，见 §5.3 第 6 条）
 > 3. 邮箱配置里的 `headers.Subject` 字段跨版本 schema 不一致且属冗余 → 已删除
 > 4. 转发组件**不暴露 `/metrics`**，不能挂 ServiceMonitor（会造成永久 `up=0` 并触发自检规则）
+
+**2026-09-13 17:24 首次演练实测**（`scripts/alert-drill.sh --hold 150`）：
+
+| 时刻 | 事件 |
+|---|---|
+| T+0s | 注入故障（frontend 副本 → 0） |
+| T+21s | 告警 Pending |
+| **T+82s** | **告警 Firing**（已优于 120 秒验收线） |
+| T+82s | Alertmanager 收到该告警 |
+| T+232s | 恢复副本为 2 |
+| T+262s | 告警 Resolved（距恢复 30 秒） |
+| — | 通道发送计数：`email` 0→1，**`webhook`（钉钉）0→0** ⚠️ |
+
+**当前卡点**：钉钉通道 0 次发送，待定位。
+另外邮箱收到的是 `InfoInhibitor`（`severity=none`）噪声告警——原因已查明：
+values 里 5 个**死配置键**（见 §5.3 第 9 条）+ 收口路由把元告警也收了进来，**已修正**
+（§5.3 第 11 条、`docs/alerting.md` §6 第 5/6 条、§7 第 7 条）。
+演练脚本自带的验收 1/2 曾误报失败，也已修正（§5.3 第 10 条、§7 第 8 条）。
+
+**下一步**：在 cp 上跑 `bash ~/diag-task7.sh` —— 7 段一次取证，含**绕过 Prometheus 的
+端到端注入测试**（会真的发邮件与钉钉），把完整输出贴回来即可定位。
 
 
 ### 任务 8：HPA 与压测

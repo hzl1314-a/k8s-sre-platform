@@ -364,6 +364,46 @@ Alertmanager 收到 / 恢复 各时刻 → 打印各通道发送计数增量 →
 > 这一格是**最硬的证据**：它证明的不是「Prometheus 显示已触发」，
 > 而是「Alertmanager 真的把通知交付到了两个 integration」。
 
+### 4.1 每个数字从哪里取（可复现，别凭印象填）
+
+演练脚本已经把这些都写进 `alert-drill.log` 了。逐项对应：
+
+| 要记录的东西 | 取值来源 | 命令 / 方法 |
+|---|---|---|
+| 故障注入时刻（**基准点**） | `alert-drill.log` | `grep fault-injected alert-drill.log` |
+| Pending 时刻 | `alert-drill.log` | `grep alert-pending alert-drill.log`（括号里已给出「距故障 N 秒」） |
+| Firing 时刻 | `alert-drill.log` | `grep alert-firing alert-drill.log` |
+| Alertmanager 收到时刻 | `alert-drill.log` | `grep alertmanager-received alert-drill.log` |
+| 恢复操作时刻 | `alert-drill.log` | `grep fault-cleared alert-drill.log` |
+| Resolved 时刻 | `alert-drill.log` | `grep alert-resolved alert-drill.log` |
+| 各通道发送计数 | `alert-drill.log` / 脚本结尾 | `grep -A 30 '通道发送计数增量' alert-drill.log` |
+| **邮箱告警到达时刻** | 邮箱（脚本取不到） | 打开那封邮件 → 「显示原始邮件」→ 看 `Date:` 头；或邮件列表里的时间 |
+| **钉钉告警到达时刻** | 钉钉（脚本取不到） | 钉钉消息本身的时间 |
+
+算「距故障多少秒」：
+
+```bash
+# 三个时刻的时间戳都在 log 里，直接照抄脚本算好的 "距故障 +Ns" 即可；
+# 若想自己核一遍（GNU date）：
+echo $(( $(date -d '2026-09-13T17:24:53+08:00' +%s) - $(date -d '2026-09-13T17:24:11+08:00' +%s) ))
+```
+
+> **记录纪律**：只写实测值，不写推测值。运维岗面试最忌讳的就是
+> 「大概一分多钟吧」——能被追问到秒的数字，比一个漂亮的区间更有说服力。
+> 如果某一项确实没取到，就写「未取到」并注明原因，不要凑数。
+
+### 4.2 截图与数字的对应关系（面试时能自证）
+
+| 截图 | 里面能看到的数字 | 自证什么 |
+|---|---|---|
+| `13-alert-rule-fired.png` | Prometheus Alerts 页面的 FIRING 状态 | 告警确实触发了 |
+| `14-alert-email.png` | 邮件时间戳 | 邮件到达时刻 ↔ 与 `alert-drill.log` 的 T_FAULT 相减 = 触达秒数 |
+| `15-alert-dingtalk.png` | 钉钉消息时间戳 | 同上（第二条独立链路） |
+| `16-alert-recovered.png` | 恢复通知时间戳 | 闭环成立 |
+
+> 建议把 `alert-drill.log` 里那几行时间线**一起截进 14/15 的图里**（同一个画面内），
+> 这样「90 秒」不是靠嘴说，而是图里就有「故障注入时刻」和「邮件到达时刻」两个锚点。
+
 ---
 
 ## 5. 排障：按链路分段定位
@@ -374,6 +414,29 @@ Alertmanager 收到 / 恢复 各时刻 → 打印各通道发送计数增量 →
 Prometheus(规则求值) → Alertmanager(路由发送) → 转发组件(格式+加签) → 钉钉/邮箱
         ①                    ②                      ③                  ④
 ```
+
+### 先跑取证脚本，再动手查
+
+```bash
+scp scripts/diag-task7.sh root@<cp公网IP>:~/
+ssh root@<cp公网IP> 'bash ~/diag-task7.sh'
+```
+
+它只读取证、不改任何东西，一次跑完 7 段并给出结论指向哪一段：
+
+| 段 | 看什么 | 能直接回答的问题 |
+|---|---|---|
+| 2/7 | Alertmanager 的**生效配置**（`/api/v2/status`） | 我们的路由到底进没进去？receiver 实际叫什么？chart 的 inhibit_rules 还在不在？ |
+| 3/7 | `notifications_total` **与** `notifications_failed_total` | 是「没发」还是「发了但失败」？失败原因是什么？ |
+| 4/7 | 转发组件自测（直接 POST 一条） | 转发组件→钉钉这一段本身通不通？errcode 是多少？ |
+| 5/7 | 两个组件的日志错误行 | 有没有网络/认证/拒收的痕迹 |
+| 6/7 | Prometheus 规则加载情况 | 规则到底加载了没 |
+| 7/7 | **端到端注入**（绕过 Prometheus 直接灌一条 critical 告警） | 路由+通道整体通不通？告警有没有被抑制（`inhibitedBy`）？ |
+
+> **7/7 是信息量最大的一步**：它把「Prometheus 侧的问题」和「Alertmanager 侧的问题」
+> 一刀切开。注入后两个通道都收到 → 说明路由与通道都是好的，问题在 Prometheus 的标签/规则侧；
+> 只有邮件到 → 问题就在钉钉那条路由或接收器上。
+> 注意它**会真的发出邮件与钉钉消息**，跑之前先确认这是你想要的。
 
 | 段 | 怎么查 | 典型症状 | 常见根因 |
 |---|---|---|---|
@@ -415,6 +478,8 @@ curl -s -X POST http://127.0.0.1:9093/api/v2/alerts -H 'Content-Type: applicatio
 | 2 | `IngressHighErrorRate` 的排查建议用 `sum by (service)` | 指标的服务名标签被改名成 `exported_service`，`sum by (service)` 只会得到空结果 | 改为 `sum by (exported_service)`，并在规则文件头部说明标签陷阱 |
 | 3 | 邮箱 Config 里写了 `headers.Subject` | 该字段 schema 在 Operator 版本间变过（新版是 array、老版是 map），且设置的值就是 Alertmanager 默认行为，纯冗余 | 直接删掉该字段 |
 | 4 | 未提及给转发组件挂 ServiceMonitor | 该组件不暴露 `/metrics`，挂了会造成永久 `up=0` | 不加 ServiceMonitor，改用 `alertmanager_notifications_failed_total` 从结果侧监控它 |
+| 5 | `monitoring/kube-prometheus-stack-values.yaml` 里写着 `infoInhibitor: false`、`watchdog: false`、`KubeMemoryOvercommit: false`、`KubeCPUOvercommit: false`、`CPUThrottlingHigh: false` | 这 5 个键在 chart 90.1.1 的 `defaultRules.rules` 里**根本不存在**（该段只接受规则文件名键），helm 不报错、静默忽略 | 删掉这 5 行；改为在路由层丢弃不该通知的告警（见下一条）。`CPUThrottlingHigh` 特意保留（任务 8 压测的有力证据） |
+| 6 | 根路由是「收口通道」（所有未匹配告警都发邮件），导致 chart 自带的 `severity=none` 元告警（InfoInhibitor）也进了收件箱 | 见 §7 踩坑表第 7 条 | 增加 `severity = none → receiver discard` 路由；**不删规则**，因为 `general.rules` 里还住着 TargetDown |
 
 ---
 
@@ -430,6 +495,8 @@ curl -s -X POST http://127.0.0.1:9093/api/v2/alerts -H 'Content-Type: applicatio
 | 4 | 部署脚本的验收项报出一个莫名其妙的大数字（如「已加载 197121 个规则组」） | 用桩命令跑脚本、`bash -x` 打印实际赋值，发现该变量被 shell 改写 | 变量名 `GROUPS` 撞上了 **bash 内建变量**（保存当前用户的组 ID），赋值后展开时被 shell 覆盖 | 改名 `RULE_GROUPS`；同类要避开 `SECONDS`/`RANDOM`/`UID`/`LINENO`/`PIPESTATUS`/`REPLY`。教训：**给别人的脚本要先拿桩数据自己跑一遍** |
 | 5 | 「连上了没」判断不可靠：连接失败时 curl 仍可能返回 0，于是验收项误报为通过 | 故意让目标不可达，观察脚本判定结果 | 只看 curl 退出码不等于拿到了正确响应 | 就绪判断改为**校验返回内容的结构**（取回 JSON 后 `jq -e '.status == "success"'`），而不是只看退出码 |
 | 6 | 邮件配置里的 `headers.Subject` | 与 CRD 的 `description` 对照 | 该字段 schema 跨 Operator 版本不一致，且其值是默认行为 | 直接删掉，见 §6 第 3 条 |
+| 7 | 演练后邮箱里收到一封 `[FIRING:1] InfoInhibitor … severity=none` 的噪声邮件，真正该看的 `DeploymentReplicasUnavailable` 反而不显眼 | ① 查 chart 的 values：`defaultRules.rules` 段里**没有** `infoInhibitor` 键（只有规则文件名键）→ values 里那行 `infoInhibitor: false` 是死配置；② `grep -rl InfoInhibitor` 定位到它在 `general.rules` 里，与 **TargetDown** 同住一个文件；③ 读 chart 默认 `alertmanager.config`：它原先把 Watchdog 路由到 `null`，InfoInhibitor 则靠 inhibit_rules 压住——但**单独触发时没有别的告警能当抑制源**，于是落到我们的收口路由被发了邮件 | 两个原因叠加：**死配置没把规则关掉** + **收口路由把 `severity=none` 也收进来了** | 删掉死配置；路由层加 `severity = none → receiver discard`。**不删规则文件**：`general.rules` 里还有 TargetDown，关整组会误伤 |
+| 8 | `deploy-task7.sh` 的验收 1、2 报失败，但随后告警实际正常触发、邮件也到了 | 对时间线：脚本在 `kubectl apply` 后只等 5 秒就断言 | **链路存在异步延迟**——Prometheus 发现「规则文件新增」要等 Operator 写文件 + config-reloader 触发 reload + Prometheus 重读，官方预期**最长 1 分钟**；Operator 生成 Alertmanager 配置并写 Secret 也要几秒。apply 完立刻断言必然误报 | 验收项改成**轮询等待**（规则最多等 90 秒）；验收 2 不再「猜 Secret 名 + grep receiver 前缀」，改为直接读 Alertmanager 的 `/api/v2/status` 拿**生效配置**，不依赖任何命名约定。另写 `scripts/diag-task7.sh` 一次取全链路证据 |
 
 ---
 

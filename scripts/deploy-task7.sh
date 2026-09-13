@@ -52,8 +52,13 @@ die()  { echo; echo "[中止] $*" >&2; exit 2; }
 
 # port-forward 的临时端口
 PROM_PORT=19090
+AM_PORT=19093
 PF_PID=""
-cleanup() { [[ -n "$PF_PID" ]] && kill "$PF_PID" 2>/dev/null; }
+PF_AM_PID=""
+cleanup() {
+  [[ -n "$PF_PID"    ]] && kill "$PF_PID"    2>/dev/null
+  [[ -n "$PF_AM_PID" ]] && kill "$PF_AM_PID" 2>/dev/null
+}
 trap cleanup EXIT INT TERM
 
 echo "=============================================================="
@@ -163,40 +168,75 @@ sleep 5
 # 注意：变量名不能用 GROUPS —— 它是 bash 的内建数组（保存当前用户的组 ID），
 # 赋值后展开时会被 shell 覆盖成 `id -g` 的值，导致报出一个莫名其妙的大数字。
 # 同理要避开的还有：SECONDS / RANDOM / UID / EUID / PPID / LINENO / PIPESTATUS / REPLY / DIRSTACK
+#
+# ★ 必须轮询等待：Prometheus 发现**规则文件新增**不是立刻的。
+#   链路是「我们要 apply → Operator 把规则写进 Prometheus 的 rules 目录 →
+#   config-reloader 触发 reload → Prometheus 重读 rules 目录」，
+#   官方文档给的预期是「最多 1 分钟」。apply 完 5 秒就判定，必然误报未加载。
 kubectl -n "$NS_MON" port-forward svc/kube-prometheus-stack-prometheus "${PROM_PORT}:9090" >/dev/null 2>&1 &
 PF_PID=$!
 sleep 4
 
-# 就绪判断不能只看 curl 退出码：连接被拒时某些环境（含沙箱）仍返回 0。
-# 这里改成取回 JSON 并校验它的结构，才叫「真的连上了」。
-RULES_JSON=$(curl -s -m 10 "http://127.0.0.1:${PROM_PORT}/api/v1/rules" 2>/dev/null)
-if [[ -n "$RULES_JSON" ]] && printf '%s' "$RULES_JSON" | jq -e '.status == "success"' >/dev/null 2>&1; then
-  RULE_GROUPS=$(printf '%s' "$RULES_JSON" | jq -r '[.data.groups[] | select(.name|startswith("boutique"))] | length')
-  RULE_COUNT=$(printf '%s'  "$RULES_JSON" | jq -r '[.data.groups[] | select(.name|startswith("boutique")) | .rules[]] | length')
-  if [[ "${RULE_GROUPS:-0}" -ge 4 ]]; then
-    ok "验收 1：Prometheus 已加载 ${RULE_GROUPS} 个 boutique 规则组 / ${RULE_COUNT} 条规则"
+RULE_GROUPS=0; RULE_COUNT=0; RULES_JSON=""
+for i in 1 2 3 4 5 6; do
+  RULES_JSON=$(curl -s -m 10 "http://127.0.0.1:${PROM_PORT}/api/v1/rules" 2>/dev/null)
+  if printf '%s' "$RULES_JSON" | jq -e '.status == "success"' >/dev/null 2>&1; then
+    RULE_GROUPS=$(printf '%s' "$RULES_JSON" | jq -r '[.data.groups[] | select(.name|startswith("boutique"))] | length')
+    RULE_COUNT=$(printf '%s'  "$RULES_JSON" | jq -r '[.data.groups[] | select(.name|startswith("boutique")) | .rules[]] | length')
+    [[ "${RULE_GROUPS:-0}" -ge 4 ]] && break
+    echo "     等待 Prometheus 加载规则…（第 ${i}/6 次，规则文件新增最多需要 1 分钟）"
+    sleep 15
   else
-    bad "验收 1：只加载到 ${RULE_GROUPS:-0} 个组（期望 4）。检查 ruleSelectorNilUsesHelmValues 是否为 false"
-    printf '%s' "$RULES_JSON" | jq -r '.data.groups[].name' | sed 's/^/      当前已加载的组: /'
+    echo "     Prometheus API 暂时不可达（第 ${i}/6 次），重试中…"
+    sleep 5
   fi
+done
+
+if [[ "${RULE_GROUPS:-0}" -ge 4 ]]; then
+  ok "验收 1：Prometheus 已加载 ${RULE_GROUPS} 个 boutique 规则组 / ${RULE_COUNT} 条规则"
+elif printf '%s' "$RULES_JSON" | jq -e '.status == "success"' >/dev/null 2>&1; then
+  bad "验收 1：等了 90 秒仍只加载到 ${RULE_GROUPS:-0} 个组（期望 4）"
+  echo "      检查 ruleSelectorNilUsesHelmValues 是否为 false（见 monitoring/kube-prometheus-stack-values.yaml）"
+  printf '%s' "$RULES_JSON" | jq -r '.data.groups[].name' | sed 's/^/      当前已加载的组: /'
 else
   bad "验收 1：Prometheus API 不可达，无法确认规则加载（port-forward 失败？）"
   PF_DEAD=1
 fi
 
-# ---- 验收 2：Operator 是否把 AlertmanagerConfig 合并进最终配置 ----
-AM_GEN=$(kubectl -n "$NS_MON" get secret -o name 2>/dev/null | grep 'alertmanager.*generated' | head -1)
-if [[ -n "$AM_GEN" ]]; then
-  CFG=$(kubectl -n "$NS_MON" get "$AM_GEN" -o jsonpath='{.data.alertmanager\.yaml}' 2>/dev/null | base64 -d 2>/dev/null)
-  if grep -q 'boutique-alertmanager-config/dingtalk' <<<"$CFG"; then
-    ok "验收 2：路由已合并（${AM_GEN##*/} 里能找到本项目的 receiver）"
+# ---- 验收 2：Alertmanager 的**生效配置**里有没有我们的路由 ----
+# 早先这里用「猜 Secret 名 + grep receiver 名前缀」的方式，结果误报为失败：
+#   · Secret 名与 receiver 命名规则都依赖 Operator 版本，猜不得；
+#   · 实际证据是那一封 InfoInhibitor 邮件 —— 它正是被我们的根路由发出来的，
+#     说明路由明明生效了（chart 默认把这类告警丢给 null）。
+# 改法：直接读 Alertmanager 自己的 /api/v2/status，它返回渲染后的**最终配置**，
+# 这是唯一权威的事实来源，不依赖任何命名约定。
+kubectl -n "$NS_MON" port-forward svc/kube-prometheus-stack-alertmanager "${AM_PORT}:9093" >/dev/null 2>&1 &
+PF_AM_PID=$!
+sleep 4
+
+AMCFG=""
+for i in 1 2 3 4 5 6; do
+  AMCFG=$(curl -s -m 10 "http://127.0.0.1:${AM_PORT}/api/v2/status" 2>/dev/null | jq -r '.configYAML' 2>/dev/null)
+  [[ -n "$AMCFG" && "$AMCFG" != "null" ]] && break
+  echo "     等待 Alertmanager 生效…（第 ${i}/6 次）"
+  sleep 5
+done
+
+if [[ -n "$AMCFG" && "$AMCFG" != "null" ]]; then
+  if printf '%s' "$AMCFG" | grep -q 'boutique-alertmanager-config'; then
+    ok "验收 2：Alertmanager 生效配置里已包含本项目的路由"
+    echo "      实际 receiver 名："
+    printf '%s' "$AMCFG" | grep -oE '[A-Za-z0-9/_-]*boutique-alertmanager-config[A-Za-z0-9/_-]*' \
+      | sort -u | sed 's/^/        /'
   else
-    bad "验收 2：最终配置里没有本项目的 receiver。检查 alertmanagerConfigSelector 与 CR 的标签"
-    echo "      手工核对：port-forward Alertmanager 9093 后打开 Status → Config"
+    bad "验收 2：生效配置里找不到本项目的路由（AlertmanagerConfig 没被选中）"
+    echo "      检查 alertmanager.alertmanagerSpec.alertmanagerConfigSelector 与 CR 的标签"
   fi
 else
-  bad "验收 2：找不到 alertmanager 的 generated Secret（Operator 可能没在跑）"
+  bad "验收 2：取不到 Alertmanager 的生效配置（port-forward 失败？）"
+  echo "      也可手工核对：port-forward 9093 后打开 http://localhost:9093 → Status → Config"
 fi
+
 
 # ---- 验收 3：转发组件在跑 ----
 NOTREADY=$(kubectl -n "$NS_MON" get pods -l app.kubernetes.io/name=prometheus-webhook-dingtalk \

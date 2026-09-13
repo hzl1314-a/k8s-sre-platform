@@ -251,14 +251,35 @@ windowsMonitoring:
 
 # -----------------------------------------------------------------------------
 # 默认规则集：chart 自带 100+ 条 K8s 官方告警规则，是很好的学习材料。
-# 但 InfoInhibitor / Watchdog 这类在小集群里纯属噪音，关掉。
-# 其余保留 —— 面试可答「用的是社区经过生产验证的规则集，不是自己拍脑袋写的阈值」。
+#
+# ⚠️ 2026-09-13 修正（演练中实测抓到）：这里原来写着 5 行「禁用某些告警」的配置，
+#    它们在 chart 90.1.1 里**全部是无效字段**，helm 不报错、只是静默忽略：
+#
+#      infoInhibitor / watchdog              → 90.x 的 defaultRules.rules 里没有这两个键了
+#      KubeMemoryOvercommit / KubeCPUOvercommit / CPUThrottlingHigh
+#                                            → 这几个是**告警名**，不是规则文件键，从来就不该写在这
+#
+#    90.x 的 defaultRules.rules 只接受「规则文件名」键，完整清单：
+#      alertmanager / etcd / configReloaders / general / k8sContainer* / kubeApiserver* /
+#      kubeControllerManager / kubelet / kubeProxy / kubePrometheus* / kubernetesApps /
+#      kubernetesResources / kubernetesStorage / kubernetesSystem / kubeScheduler* /
+#      kubeStateMetrics / network / node / nodeExporter* / prometheus / prometheusOperator / windows
+#    （本机 downloads/kube-prometheus-stack-90.1.1.tgz 解压后可直接查 values.yaml 核对，
+#      不要凭记忆写这些键名——这就是「配了却没生效」的典型来源）
+#
+#    实测后果：InfoInhibitor 一直在触发，而我们的根路由会把 severity=none 也收给邮件，
+#    于是邮箱里多出一封 InfoInhibitor 噪声邮件。
+#
+# 正确做法（本项目的选择，规则一条都不删）：
+#   · 「不该通知的告警」交给 Alertmanager 路由显式丢弃 —— 见
+#     manifests/alerts/alertmanager-config.yaml 里 severity=none → receiver discard
+#   · 为什么不图省事直接关闭整个规则文件：
+#     general.rules 里除了 Watchdog / InfoInhibitor，还有 **TargetDown**（很关键的告警），
+#     关掉整组会把 TargetDown 一起干掉
+#   · CPUThrottlingHigh 特意保留：任务 8 压测时它能直接证明 Pod 被限流，是复盘的有力证据
 # -----------------------------------------------------------------------------
 defaultRules:
   create: true
-  rules:
-    infoInhibitor: false
-    watchdog: false
-    KubeMemoryOvercommit: false
-    KubeCPUOvercommit: false
-    CPUThrottlingHigh: false
+  # 保留全部规则文件（不逐条禁用）
+  # 另：defaultRules.customRules.<告警名>.severity 可以覆盖单条告警的 severity，
+  #     需要改「级别」而不是「是否通知」时用它。
