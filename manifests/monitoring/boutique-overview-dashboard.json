@@ -20,7 +20,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "业务 QPS（入口层）",
-      "description": "Online Boutique 自身不暴露 Prometheus 指标，业务 QPS 只能从 Traefik 入口层观测。注意一个明确边界：Traefik 只看得见经它路由的服务（boutique 当前只有 frontend 一个出口），微服务之间的调用不经过 Traefik，因此这里看不到。",
+      "description": "Online Boutique 自身不暴露 Prometheus 指标，业务 QPS 只能从 Traefik 入口层观测。注意一个明确边界：Traefik 只看得见经它路由的服务（boutique 当前只有 frontend 一个出口），微服务之间的调用不经过 Traefik，因此这里看不到。为什么过滤用 exported_service 而不是 service？因为抓取目标（traefik-metrics Service）自带 service 标签，Prometheus 的 honor_labels=false 会把指标上与之冲突的同名标签改名为 exported_ 前缀。",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "fieldConfig": {
@@ -45,7 +45,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(traefik_service_requests_total{service=~\"boutique-.*\"}[5m]))",
+          "expr": "sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\"}[5m]))",
           "legendFormat": "总 QPS",
           "refId": "A"
         }
@@ -80,13 +80,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\"boutique-.*\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{exported_service=~\"boutique-.*\"}[5m])) by (le))",
           "legendFormat": "P95",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\"boutique-.*\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(traefik_service_request_duration_seconds_bucket{exported_service=~\"boutique-.*\"}[5m])) by (le))",
           "legendFormat": "P50",
           "refId": "B"
         }
@@ -121,8 +121,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * sum(rate(traefik_service_requests_total{service=~\"boutique-.*\",code=~\"5..\"}[5m])) by (service) / sum(rate(traefik_service_requests_total{service=~\"boutique-.*\"}[5m])) by (service)",
-          "legendFormat": "{{service}}",
+          "expr": "100 * sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\",code=~\"5..\"}[5m])) by (exported_service) / sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\"}[5m])) by (exported_service)",
+          "legendFormat": "{{exported_service}}",
           "refId": "A"
         }
       ]
@@ -156,7 +156,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(traefik_service_requests_total{service=~\"boutique-.*\"}[5m])) by (code)",
+          "expr": "sum(rate(traefik_service_requests_total{exported_service=~\"boutique-.*\"}[5m])) by (code)",
           "legendFormat": "{{code}}",
           "refId": "A"
         }
