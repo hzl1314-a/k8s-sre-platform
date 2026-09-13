@@ -19,8 +19,8 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "入口 QPS（Traefik 入口层全部路由）",
-      "description": "Online Boutique 自身不暴露 Prometheus 指标，业务 QPS 只能从 Traefik 入口层观测。这是本看板的核心指标之一。",
+      "title": "业务 QPS（入口层）",
+      "description": "Online Boutique 自身不暴露 Prometheus 指标，业务 QPS 只能从 Traefik 入口层观测。注意一个明确边界：Traefik 只看得见经它路由的服务（boutique 当前只有 frontend 一个出口），微服务之间的调用不经过 Traefik，因此这里看不到。",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "fieldConfig": {
@@ -130,8 +130,8 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "各服务 QPS 明细",
-      "description": "按服务拆分的请求量，用于定位「是哪个服务被打爆了」。",
+      "title": "各响应码 QPS（2xx / 3xx / 4xx / 5xx）",
+      "description": "按 HTTP 状态码拆分请求量。为什么不做「按服务」拆分？因为 Traefik 只看得见经它路由的服务，boutique 只有一个 frontend 出口，按服务拆出来只有一条线；按状态码拆则能立刻看出 4xx / 5xx 是否异常，对排障更有用。",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "fieldConfig": {
@@ -156,8 +156,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(traefik_service_requests_total{service=~\"boutique-.*\"}[5m])) by (service)",
-          "legendFormat": "{{service}}",
+          "expr": "sum(rate(traefik_service_requests_total{service=~\"boutique-.*\"}[5m])) by (code)",
+          "legendFormat": "{{code}}",
           "refId": "A"
         }
       ]
