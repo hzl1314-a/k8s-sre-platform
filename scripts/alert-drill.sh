@@ -29,13 +29,15 @@
 #      轮询精度会碎掉（这个坑在故障演练文档里已记录）。
 #
 # 关于「投递时刻」怎么取（这一步以前靠手工，现在脚本自动完成）：
-#   Alertmanager 每成功投递一次通知都会打一行日志（ts 为 **UTC**）：
-#     ts=... level=info component=dispatcher integration=email[0] msg="Notify success" ...
-#   这是比翻邮箱 / 钉钉 UI 更可靠的证据，原因是收件人侧的两个坑：
-#     · 邮箱客户端只把时间显示到「分钟」，没有秒；
-#     · 钉钉会把间隔小于 5 分钟的消息合并到**同一个时间分隔**下，
-#       于是 FIRING（20:02）与 RESOLVED（20:05）看起来像同一时刻发的。
-#   脚本在 [8/8] 段直接把 integration × 时刻 × 距故障秒数打出来，用于回填文档。
+#   收件人界面不能当秒级证据：邮箱只显示到**分钟**，钉钉桌面客户端也只到分钟。
+#   那用 Alertmanager 日志行不行？——**首次投递成功是 Debug 级别，默认不打印**：
+#     // notify/retry_stage.go
+#     if i <= 1 { l.Debug("Notify success", ...) } else { l.Info("Notify success") }
+#   健康投递走 Debug 分支，logLevel=info（默认）下 grep 整段日志零命中
+#   —— 2026-09-13 在真机上就是这么翻车的，别再用日志取证（除非把 logLevel 调 debug）。
+#   本脚本改用**自己采样 Alertmanager 的 /metrics**：演练期间每 2 秒直连它的端口取
+#   alertmanager_notifications_total，记录每个通道第一次自增的时刻。精度 = 采样间隔，
+#   与日志级别无关。采样落在 ${OUT}.samples，--report 也读它。
 #
 # 退出码：0 全部符合预期；1 依赖缺失；2 未在预期时间内观测到告警/恢复
 # =============================================================================
@@ -59,6 +61,8 @@ OUT="alert-drill.log"
 REPORT=0              # --report：只回填投递时间线，不注入故障
 RESTORE_REPLICAS=2    # 演练结束后要恢复到的副本数；[1/8] 段会按读取到的真实值覆盖
                       # （不要写死 2：万一基线是 3 副本，恢复成 2 就把集群改坏了）
+SAMPLE_PID=""         # 投递时刻采样进程（后台），收尾时杀掉
+SAMPLE_INTERVAL=2     # 采样间隔（秒）＝ 投递时刻的时间精度
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -72,6 +76,8 @@ while [[ $# -gt 0 ]]; do
     *) echo "未知参数: $1" >&2; exit 1 ;;
   esac
 done
+
+SAMPLES="${OUT}.samples"   # 投递时刻采样文件（与日志同目录，--report 复用它）
 
 # ---------------------------- 工具函数 ---------------------------------------
 ts()   { date +%Y-%m-%dT%H:%M:%S%:z; }
@@ -107,50 +113,62 @@ snap_get() {
   printf '%s\n' "$1" | awk -v k="$2" '$1==k {printf "%d", $2+0; f=1} END {if (!f) print 0}'
 }
 
-# ------------------------ Alertmanager 投递时间线 ----------------------------
-# 为什么不信收件人界面（两个坑，本机实测）：
-#   · 邮箱客户端的时间只精确到分钟；
-#   · 钉钉会把间隔 <5 分钟的消息合并进同一个时间分隔，看起来像同一时刻发的。
-# Alertmanager 自己的日志才有秒级/毫秒级证据（ts 为 UTC，换算成本机时区后打印）。
-am_pod() {
-  local p
-  p=$(kubectl -n "$NS_MON" get pods -l app.kubernetes.io/name=alertmanager -o name 2>/dev/null | head -1)
-  if [[ -z "$p" ]]; then
-    # 兜底：Operator 生成的 Pod 名形如 alertmanager-<CR 名>-0
-    p=$(kubectl -n "$NS_MON" get pods -o name 2>/dev/null | grep '/alertmanager-' | head -1)
-  fi
-  printf '%s' "$p"
+# --------------------- 投递时刻采样（不依赖日志级别） -------------------------
+# 收件人界面为什么不能用：邮箱只显示到分钟；钉钉桌面客户端也只到分钟。
+# 日志为什么不能用：见文件头——「首次投递成功」是 Debug 级别，默认不打印。
+# 结论：自己采样 Alertmanager 的 /metrics（直连它的端口，不经 Prometheus 抓取间隔）。
+sample_once() {
+  local t
+  t=$(now)
+  curl -s -m 3 "http://127.0.0.1:${AM_PORT}/metrics" 2>/dev/null \
+    | sed -n 's/^alertmanager_notifications_total{integration="\([^"]*\)"} \([0-9.eE+]*\).*/\1 \2/p' \
+    | while read -r k v; do printf '%s\t%s\t%s\n' "$t" "$k" "$v" >> "$SAMPLES"; done
 }
 
-# 取 [since, now] 窗口内的成功投递记录，输出 "integration <utc-ts>"，按时间排序
-am_notify_success() {
-  local since="$1" pod window lines
-  pod=$(am_pod)
-  [[ -z "$pod" ]] && return 0
-  window=$(( $(now) - since + 60 ))
-  lines=$(kubectl -n "$NS_MON" logs "$pod" --since="${window}s" --tail=-1 2>/dev/null) || return 0
-  printf '%s\n' "$lines" \
-    | grep 'Notify success' \
-    | sed -n 's/.*ts=\([^ ]*\).*integration=\([a-zA-Z0-9_]*\).*/\2 \1/p' \
-    | sort -k2
+start_sampling() {
+  : > "$SAMPLES"
+  ( while :; do sample_once; sleep "$SAMPLE_INTERVAL"; done ) &
+  SAMPLE_PID=$!
 }
 
-# 打印投递时间线：时刻 / 通道 / 距故障秒数
-print_notify_timeline() {
-  local t0="$1" rows ep skipped=0
-  rows=$(am_notify_success "$t0")
-  if [[ -z "$rows" ]]; then
-    echo "      （未取到投递记录：日志可能已轮转，或该窗口内没有成功投递）"
+# 某通道的基线值（该通道的第一条样本 = 故障发生之前）
+samples_base() {
+  awk -F'\t' -v k="$1" '$2==k {print $3; exit}' "$SAMPLES" 2>/dev/null
+}
+
+# 基线之后第一次自增的时刻；$3 = epoch 下限（含），用于区分「告警」与「恢复」两次投递
+samples_first_bump() {
+  awk -F'\t' -v k="$1" -v b="$2" -v a="$3" \
+    '$2==k && $3+0 > b+0 && $1+0 >= a+0 {print $1; exit}' "$SAMPLES" 2>/dev/null
+}
+
+# 打印投递时间线：时刻 / 通道 / 距故障 / 事件
+# 参数：<故障 epoch> [<恢复 epoch>]
+print_delivery_timeline() {
+  local t0="$1" tr="${2:-}" ch b t1 t2 found=0
+  if [[ ! -s "$SAMPLES" ]]; then
+    echo "      （没有采样数据：${SAMPLES} 不存在或为空）"
+    echo "      采样是演练期间后台进行的，请重跑一次 bash ~/alert-drill.sh"
     return 0
   fi
-  echo "      时刻(CST)  通道      距故障"
-  while read -r integ iso; do
-    ep=$(date -d "$iso" +%s 2>/dev/null) || continue
-    # 早于时间基准的记录属于上一场演练（--since 窗口的边界效应），跳过，免得算出负数
-    if [[ $ep -lt $t0 ]]; then skipped=$(( skipped + 1 )); continue; fi
-    printf "      %s   %-9s +%ss\n" "$(date -d "@$ep" +%H:%M:%S)" "$integ" "$(( ep - t0 ))"
-  done <<<"$rows"
-  [[ $skipped -gt 0 ]] && echo "      （已跳过 ${skipped} 条早于本次故障的记录，属上一场演练）"
+  printf "      %-9s %-8s %-8s %s\n" "时刻" "通道" "距故障" "事件"
+  for ch in email webhook; do
+    b=$(samples_base "$ch")
+    [[ -z "$b" ]] && continue
+    t1=$(samples_first_bump "$ch" "$b" "$t0")
+    if [[ -n "$t1" ]]; then
+      printf "      %-9s %-8s +%-7s 告警投递\n" "$(date -d "@$t1" +%H:%M:%S)" "$ch" "$(( t1 - t0 ))"
+      found=1
+    fi
+    if [[ -n "$tr" ]]; then
+      t2=$(samples_first_bump "$ch" "$b" "$tr")
+      if [[ -n "$t2" ]]; then
+        printf "      %-9s %-8s +%-7s 恢复投递\n" "$(date -d "@$t2" +%H:%M:%S)" "$ch" "$(( t2 - t0 ))"
+        found=1
+      fi
+    fi
+  done
+  (( found == 0 )) && echo "      （这两个通道在本窗口内都没有观测到计数器自增）"
   return 0
 }
 
@@ -189,6 +207,7 @@ cleanup() {
     kubectl -n "$NS_APP" scale deploy/"$DEPLOY" --replicas="$RESTORE_REPLICAS"
     log "auto-restore" "异常退出后自动恢复副本为 ${RESTORE_REPLICAS}"
   fi
+  [[ -n "${SAMPLE_PID:-}"  ]] && kill "$SAMPLE_PID"  2>/dev/null
   [[ -n "${PF_PROM_PID:-}" ]] && kill "$PF_PROM_PID" 2>/dev/null
   [[ -n "${PF_AM_PID:-}"   ]] && kill "$PF_AM_PID"   2>/dev/null
   exit "$rc"
@@ -212,16 +231,22 @@ if [[ "$REPORT" == "1" ]]; then
     exit 1
   fi
   T0=$(date -d "$T_FAULT_H" +%s 2>/dev/null) || { echo "[错误] 无法解析时间: ${T_FAULT_H}" >&2; exit 1; }
+  # 恢复时刻也取出来：有了它才能把「告警投递」与「恢复投递」两次增量分开
+  TR_H=$(awk -F'\t' '$2=="fault-cleared" {print $1}' "$OUT" 2>/dev/null | tail -1)
+  TR=""
+  [[ -n "$TR_H" ]] && TR=$(date -d "$TR_H" +%s 2>/dev/null)
   echo "=============================================================="
   echo " 任务 7 投递时间线回填（--report，只读，不注入故障）"
   echo "--------------------------------------------------------------"
   echo " 时间基准 : ${T_FAULT_H}"
   echo "            （来自 ${OUT} 的 fault-injected 记录）"
   echo "=============================================================="
+  echo " 采样文件 : ${SAMPLES}"
+  echo "=============================================================="
   echo
-  print_notify_timeline "$T0"
+  print_delivery_timeline "$T0" "$TR"
   echo
-  echo " 取 email / webhook 各自第一条的 +Ns，即为"
+  echo " 取 email / webhook 各自「告警投递」行的 +Ns，即为"
   echo " 「故障 → 该通道投递成功」的秒数（验收线 ≤120s）。"
   echo
   exit 0
@@ -291,6 +316,10 @@ echo "      演练前告警状态: $(alert_state)"
 BASE_TOTAL=$(notif_snapshot)
 echo "      演练前各通道累计发送数:"
 printf '%s\n' "$BASE_TOTAL" | sed 's/^/        /' | grep . || echo "        （无数据，可能还没发过通知）"
+
+# 启动后台采样：投递时刻的唯一证据来源（见文件头，不用日志是因为日志级别不对）
+start_sampling
+echo "      已启动投递时刻采样：每 ${SAMPLE_INTERVAL}s 直连 Alertmanager /metrics → ${SAMPLES}"
 
 # ---------------------------- 2. 注入故障 -----------------------------------
 echo
@@ -417,12 +446,13 @@ D_WEBHOOK=$(( $(snap_get "$AFTER_TOTAL" webhook) - $(snap_get "$BASE_TOTAL" webh
 
 # ---------------------------- 6. 精确投递时刻 --------------------------------
 echo
-echo "[8/8] 精确投递时刻（Alertmanager 日志，秒级 —— 回填文档就用这个数字）"
-print_notify_timeline "$T_FAULT"
-echo "      说明：这是 Alertmanager 把通知交给邮件服务器 / 转发组件的时刻"
-echo "            （日志 ts 为 UTC，已换算本机时区）。收件人侧通常再晚 1~5 秒。"
-echo "            邮箱没有秒、钉钉会把 5 分钟内的消息合并成一个时间分隔，"
-echo "            所以不要用它们的界面时间去填表格。"
+echo "[8/8] 精确投递时刻（计数器采样，精度 ±${SAMPLE_INTERVAL}s —— 回填文档就用这个）"
+print_delivery_timeline "$T_FAULT" "${T_RESTORE:-}"
+echo "      说明：这是 Alertmanager 把通知交出去的时刻，收件人侧通常再晚 1~5 秒。"
+echo "            机制：演练期间每 ${SAMPLE_INTERVAL}s 采样 alertmanager_notifications_total，"
+echo "            记下每个通道第一次自增的时刻。"
+echo "            不用日志取证的原因：「首次投递成功」是 Debug 级别、默认不打印"
+echo "            （源码 notify/retry_stage.go；2026-09-13 真机踩过，见脚本头注释）。"
 
 # ---------------------------- 6. 汇报 ---------------------------------------
 echo
@@ -446,14 +476,16 @@ echo " —— 回填 docs/alerting.md §4 的数字 ——"
 echo "   权威来源：上面 [8/8] 段「精确投递时刻」"
 echo "     · 故障 → 邮件投递 = email   第一条的 +Ns"
 echo "     · 故障 → 钉钉投递 = webhook 第一条的 +Ns（验收线 ≤120s）"
-echo "   若日志已轮转取不到，用只读回填模式（不注入故障）："
+echo "   采样文件留在 ${SAMPLES}，随时可只读重算（不注入故障）："
 echo "     bash ~/alert-drill.sh --report"
 echo
 echo "   收件人侧二次确认（可选，不算 KPI）："
 echo "     · 邮箱：右键邮件 → 显示原始邮件 → Date 头（有秒）"
 echo "     · 钉钉：悬停消息看发送时间"
-echo "       ⚠️ 间隔 <5 分钟的多条消息会被合并到同一个时间分隔下，"
-echo "          看起来像同一时刻发的 —— 别据此判断投递时刻"
+echo "       ⚠️ 两个界面都**只到分钟**（实测：钉钉桌面客户端显示 20:40 / 20:43），"
+echo "          所以不要用界面时间算「故障 → 触达」的秒数，那是秒级 KPI"
+echo "          （2026-09-13 修正：此前写的「钉钉会合并 5 分钟内的消息」不成立，
+echo            那张图里显示的是消息组的时间标签，不是每条消息各自的时间）"
 echo
 echo " 截图对应（docs/screenshots/README.md S4 段）："
 echo "   13-alert-rule-fired.png  Prometheus → Alerts 页面，${ALERT_NAME} 为 FIRING"

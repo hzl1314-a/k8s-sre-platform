@@ -32,3 +32,4 @@ dingtalk-config.yml
 .idea/
 .DS_Store
 Thumbs.db
+*.samples

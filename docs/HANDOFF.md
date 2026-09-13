@@ -174,7 +174,7 @@ k8s-sre-platform/
 | 10 | **apply 完立刻断言「没生效」必然误报** | Operator 写规则文件 + config-reloader 触发 reload + Prometheus 重读，官方预期**最长 1 分钟**；生成 Alertmanager 配置同理。校验脚本必须轮询等待，不要 apply 后 sleep 5 就判定 |
 | 11 | **要不要通知 ≠ 规则要不要触发** | 用 Alertmanager 的路由表达「谁该收到什么」，别去删规则。例：`severity = none` 的元告警（InfoInhibitor）在收口路由下会污染收件箱，正确做法是加一条 `→ receiver discard` 的路由（空接收器即官方支持的丢弃写法），而不是关掉整组规则（`general.rules` 里还有 TargetDown） |
 | 12 | **AlertmanagerConfig 与告警不在同一命名空间 = 一条通知都发不出** | Operator 的 `alertmanagerConfigMatcherStrategy.type` **默认 `OnNamespace`**，会给 AlertmanagerConfig 里**每条路由**追加 `namespace = <配置所在命名空间>`（源码 `pkg/alertmanager/amcfg.go` 的 `namespaceEnforcer.processRoute`）。我们的配置在 `monitoring`、业务告警在 `boutique` → 业务告警全被丢到默认 `null` 接收器。**症状极迷惑**：Prometheus 里告警正常 FIRING、Alertmanager 也收到了，就是不发通知；唯一收到的那封邮件偏偏是 `monitoring` 命名空间的 InfoInhibitor。修法：values 里设 `alertmanagerConfigMatcherStrategy.type: OnNamespaceExceptForAlertmanagerNamespace`（本项目选它而非 `None`：配置住在 Alertmanager 自己的命名空间，该策略语义正是「身边的配置=集群级策略」，且保留了对其它命名空间的默认保护），然后 `helm upgrade` |
-| 13 | **别拿收件人界面当秒级证据**：邮箱只显示到分钟；钉钉把间隔 <5 分钟的推送合并进同一个时间分隔（FIRING 20:02 与 RESOLVED 20:05 看着像同一时刻发的） | 改从 Alertmanager 日志取投递记录对时间 | 收件人客户端的显示策略，与投递是否正常无关 | 统一用 `alert-drill.sh --report`：读日志里 `msg="Notify success"` 的 `ts`（UTC→本机时区）算出「距故障 N 秒」，并自动跳过早于基准的上一场记录 |
+| 13 | **收件人界面只到分钟，算不出秒级 KPI**；且**别用 Alertmanager 日志取证**——`msg="Notify success"` 在「首次投递成功」时是 **Debug** 级别（`notify/retry_stage.go`：`if i <= 1 { l.Debug(...) } else { l.Info(...) }`），默认 `logLevel=info` 下 grep 整段日志**零命中** | 先在真机 grep 日志（无命中）→ 回头读上游源码确认级别 → 换成采样 `/metrics` | ① 邮箱/钉钉客户端都只显示到分钟；② 健康投递走日志的 Debug 分支 | `alert-drill.sh` 改为演练期间**每 2s 直连 Alertmanager `/metrics`** 采样 `alertmanager_notifications_total`，记录各通道首次自增时刻（精度 ±2s、与日志级别无关）；`--report` 复用采样文件 `alert-drill.log.samples` |
 | 14 | **收尾/恢复路径宁可不动，也不能基于「读失败」做变更**：用 `${cur:-0}` 判副本数时，`kubectl` 读失败会让空值被当成 `0`，脚本于是在**正常集群上执行 scale、把副本数改成 2**；同理恢复目标写死 `--replicas=2` 时，基线是 3 副本的集群会被改坏 | 桩命令让 `kubectl get deploy` 返回空，观察收尾动作 | `${var:-0}` 把「读失败」与「真的是 0」混为一谈。演练脚本会改集群状态，这类路径只允许在**确认**之后才动作 | 判定改成 `[[ "$cur" == "0" ]]`；恢复目标改用读到的**演练前真实副本数**（`RESTORE_REPLICAS`），读不到才退回 2 并显式告警 |
 
 ### 5.4 工具使用类（给「人」的提醒）
@@ -206,15 +206,17 @@ k8s-sre-platform/
 **结果**：邮箱与钉钉两个通道均**实测投递成功**（截图 14/15/16 佐证），
 验收 KPI「故障 → 触达」落在 120 秒线内。
 
-**两次演练对比（本任务最有价值的一段证据）**：
+**三次演练对比（本任务最有价值的一段证据）**：
 
-| 观测点 | 17:24 第一次 | 20:00 第二次（修复后） |
-|---|---|---|
-| 告警 Pending | T+21s | T+9s |
-| **告警 Firing** | T+82s | **T+70s** |
-| Alertmanager 收到 | T+82s | T+70s |
-| 通道计数增量 | `email` 0→1，**`webhook` 0→0** ⚠️ | `email` +1、`webhook` **+1**（钉钉首次真正发出） |
-| 收件人实际结果 | 只收到一封 InfoInhibitor 噪声 | 邮件 20:02 / 钉钉 20:02；恢复通知 20:05 **两条都到** |
+| 观测点 | ① 17:24 | ② 20:00（修命名空间策略后） | ③ 20:39（修脚本后，定稿） |
+|---|---|---|---|
+| 告警 Pending | T+21s | T+9s | T+13s |
+| **告警 Firing** | T+82s | T+70s | **T+73s** |
+| 通道计数增量 | `email` 0→1，**`webhook` 0→0** ⚠️ | `email` +1、`webhook` +1 | `email` **+2**、`webhook` **+2** ✅ |
+| 收件人实际结果 | 只收到一封 InfoInhibitor 噪声 | 各 2 条 | 邮件 20:40、钉钉 20:40；恢复 20:43 **两通道两条都到** |
+
+> ③ 是「各 +2」而 ② 只有「+1」：Alertmanager 先标 Resolved、再**异步**投递恢复通知，
+> 脚本旧版一检出 Resolved 就取数会漏掉恢复那条（取数竞态，已修）。
 
 **第一次「一条通知都不发」的根因**（详见 §5.3 第 12 条）：
 Operator 的 `alertmanagerConfigMatcherStrategy` **默认 `OnNamespace`**，会给
@@ -245,8 +247,16 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
 **剩余事项**：
 
 - 截图 `13-alert-rule-fired.png` 待补（Prometheus → Alerts 页面显示 FIRING，带地址栏）。
-  14/15/16 已归档到 `docs/screenshots/`。
-- 用 `--report` 把 `docs/alerting.md` §4 里两组标「≈」的投递秒数换成实测值。
+  14/15/16 已归档到 `docs/screenshots/`（用 20:40 / 20:43 那一版）。
+- 跑一次**新版**脚本 `bash ~/alert-drill.sh --hold 150` 拿到精确投递秒数，
+  再用 `bash ~/alert-drill.sh --report` 回填 `docs/alerting.md` §4 里两组标「≈」的数。
+
+**投递时刻的取证方式改过一次（别按旧版理解）**：原设计读 Alertmanager 日志里的
+`msg="Notify success"`，实测**取不到**——源码 `notify/retry_stage.go` 中
+「首次投递成功」是 `Debug` 级别（`if i <= 1 { l.Debug(...) } else { l.Info(...) }`），
+默认 `logLevel=info` 下**根本不打印**。现改为**每 2s 直连 Alertmanager `/metrics` 采样**
+`alertmanager_notifications_total`，记录各通道首次自增的时刻 —— 精度 ±2s，
+且与日志级别无关，采样落在 `alert-drill.log.samples`。
 
 > ⚠️ **原交接内容有 4 处已修正，不要再按旧版执行**（详见手册 §6）：
 > 1. 钉钉的 Helm chart 已从 prometheus-community **下架**，`helm install` 必然失败 → 改为自维护清单
