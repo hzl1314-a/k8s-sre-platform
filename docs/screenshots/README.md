@@ -17,7 +17,7 @@
 | `01-nodes-ready.png` | `kubectl get nodes -o wide`，三节点 Ready | ✅ 已采集 |
 | `02-calico-pods.png` | `kubectl get pods -n calico-system` 全 Running | ✅ 已采集 |
 | `03-kube-system.png` | `kubectl get pods -n kube-system` 全 Running | ✅ 已采集 |
-| `04-remote-kubectl.png` | **本机**执行 `kubectl get nodes`（证明远程管理能力） | ✅ 已采集（合成终端图：命令与输出逐字取自 `04-source.log` 真实执行记录，生成器 `scripts/gen-04-remote-html.py`；通道为 SSH 隧道，6443 未暴露公网） |
+| `04-remote-kubectl.png` | **本机**执行 `kubectl get nodes`（证明远程管理能力） | ✅ **实拍**（2026-09-14 用户本机 PowerShell 真实操作截图，SSH 隧道 127.0.0.1:6443，6443 未暴露公网；辅助留痕 `04-source.log` + 合成版生成器 `gen-04-remote-html.py` 备查） |
 
 > **关于 `04-remote-kubectl.png`**：它证明的是「能在本机管理集群」这件事，
 > 用的是 **SSH 隧道**方案（**不是**把 6443 暴露到公网）。做法见 `docs/setup-cluster.md` 3.4 节。

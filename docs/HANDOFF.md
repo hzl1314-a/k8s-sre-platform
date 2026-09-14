@@ -409,7 +409,7 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
       本机装 kubectl v1.31.14（dl.k8s.io 直连可下）+ paramiko 手写端口转发
       （sshtunnel 包与新版 paramiko 不兼容：DSSKey 被移除）+ kubeconfig 改
       insecure-skip-tls-verify（apiserver 证书 SAN 不含 127.0.0.1，隧道场景标准写法）。
-      真实执行记录 `04-source.log`，合成终端图生成器 `scripts/gen-04-remote-html.py`
+      真实执行记录 `04-source.log` + AI 合成终端图先行验证，最终入库版为**用户实拍 PowerShell 截图**（2026-09-14 23:13，同命令同输出）
 - [x] **有 Pod 累计重启 2-3 次（OOMKilled，已修复 2026-09-14 凌晨）**：
       实锤 currencyservice / paymentservice 各 4-5 次；payment(Node) 静息 92-102Mi
       贴 128Mi limit（懒 GC 顶到 cgroup 才回收，OOM 必然），currency(Go) 流量毛刺
