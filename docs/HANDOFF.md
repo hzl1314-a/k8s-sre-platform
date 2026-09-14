@@ -57,7 +57,7 @@
 2. **任务 10：README 收口 + 简历**：把实测数字写进根 README 与简历 bullet——
    压测 24.66 req/s / P99 2.78s、演练可用率 99.03% 与 28.3%、告警触达 84s、
    恢复通知 502s、排水 11s 等（素材全在两份手册里）
-3. **杂项**：仓库 push GitHub、`04-remote-kubectl.png` 补截（S1 欠账）
+3. ✅ **杂项清零（2026-09-14 晚）**：`04-remote-kubectl.png` 已补截；远端仓库已建 boutique-k8s-project，push 执行中
 
 ### 本机环境变化（比本文档旧版描述重要）
 
@@ -405,7 +405,11 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
       修复 = preferred→required + 控制面 toleration；复验双副本 w2+cp、探活 200。
       完整闭环：chaos-drill.md「修复与复验」+ `docs/traefik-affinity-fix.log`
       （rev4 原始日志被覆盖，已重建注释并补稳态复验）
-- [ ] `04-remote-kubectl.png` 未截（S1 欠账，做法见截图索引里的说明）
+- [x] **`04-remote-kubectl.png` 已补截（2026-09-14 晚，S1 欠账清零）**：
+      本机装 kubectl v1.31.14（dl.k8s.io 直连可下）+ paramiko 手写端口转发
+      （sshtunnel 包与新版 paramiko 不兼容：DSSKey 被移除）+ kubeconfig 改
+      insecure-skip-tls-verify（apiserver 证书 SAN 不含 127.0.0.1，隧道场景标准写法）。
+      真实执行记录 `04-source.log`，合成终端图生成器 `scripts/gen-04-remote-html.py`
 - [x] **有 Pod 累计重启 2-3 次（OOMKilled，已修复 2026-09-14 凌晨）**：
       实锤 currencyservice / paymentservice 各 4-5 次；payment(Node) 静息 92-102Mi
       贴 128Mi limit（懒 GC 顶到 cgroup 才回收，OOM 必然），currency(Go) 流量毛刺
@@ -420,7 +424,7 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
       `downloads/render-kps-{before,after}.out`
 - [ ] **push GitHub（用户选择延后，本地已全部就绪 2026-09-14）**：
       commit `4625483`（46 文件）+ tag `v1.0` 已打好，远端仓库未创建；
-      push 时建仓 k8s-sre-platform（hzl1314-a，GCM 有凭据，gh 未装可用 API 建仓），
+      远端仓库已建：**https://github.com/hzl1314-a/boutique-k8s-project.git**（注意仓库名不是 k8s-sre-platform），
       安全扫描已过（SMTP 走 Secret 引用、钉钉 token 已 ignore、无明文凭据）
 
 ---

@@ -41,3 +41,7 @@ __pycache__/
 # 例外：docs 下的演练/压测/修复证据日志是证据链，必须入库（其余 *.log 仍忽略）
 !docs/*.log
 !docs/*.bak
+
+# 合成截图的中间产物（生成器脚本是唯一事实来源）
+docs/screenshots/*.html
+!docs/screenshots/*.log

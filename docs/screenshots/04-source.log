@@ -1,0 +1,27 @@
+# 04-remote-kubectl.png 事实来源（真实执行记录）
+# 执行时间：2026-09-14 22:46:18
+# 通道：本机 kubectl -> SSH 隧道(127.0.0.1:6443) -> cp:6443，6443 未暴露公网
+
+PS E:\> kubectl get nodes -o wide
+NAME     STATUS   ROLES           AGE    VERSION    INTERNAL-IP      EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
+k8s-cp   Ready    control-plane   2d4h   v1.31.14   172.18.240.99    <none>        Ubuntu 22.04.5 LTS   5.15.0-190-generic   containerd://2.2.1
+k8s-w1   Ready    <none>          2d4h   v1.31.14   172.18.240.100   <none>        Ubuntu 22.04.5 LTS   5.15.0-190-generic   containerd://2.2.1
+k8s-w2   Ready    <none>          2d4h   v1.31.14   172.18.240.101   <none>        Ubuntu 22.04.5 LTS   5.15.0-190-generic   containerd://2.2.1
+
+PS E:\> kubectl get pods -n kube-system
+coredns-fcd6c9c4-nswh8            1/1   Running   0             2d4h
+coredns-fcd6c9c4-xh6h8            1/1   Running   0             2d4h
+etcd-k8s-cp                       1/1   Running   1             2d4h
+kube-apiserver-k8s-cp             1/1   Running   1             2d4h
+kube-controller-manager-k8s-cp    1/1   Running   1             2d4h
+kube-proxy-2d9q2                  1/1   Running   0             2d4h
+kube-proxy-2jdbg                  1/1   Running   1 (20h ago)   2d4h
+kube-proxy-hhqfd                  1/1   Running   0             2d4h
+kube-scheduler-k8s-cp             1/1   Running   0             2d4h
+metrics-server-5859887d68-gjdcd   1/1   Running   0             20h
+
+# kube-system 共 10 个 Pod 全部 Running
+PS E:\> kubectl version
+Client Version: v1.31.14
+Kustomize Version: v5.4.2
+Server Version: v1.31.14
