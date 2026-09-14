@@ -159,11 +159,12 @@ spec:
       emailConfigs:
         # ⚠️ 隐私提醒：这里会暴露你的邮箱地址。若仓库要公开到 GitHub，
         #    建议换成专用的求职/项目邮箱，或接受该风险。
-        - to: '3304345637@qq.com'
-          from: '3304345637@qq.com'
+        # ⚠️ 隐私：本文件入仓版本收/发件人已替换为占位符；集群上生效的是真实地址（Secret/本地）。
+        - to: 'your-address@example.com'
+          from: 'your-address@example.com'
           # 465 = SMTPS（建连即 TLS，隐式加密）；587 = SMTP + STARTTLS（先明文握手再升级）
           smarthost: 'smtp.qq.com:465'
-          authUsername: '3304345637@qq.com'
+          authUsername: 'your-address@example.com'
           # 授权码从 Secret 读取，操作者只需创建一次，配置文件本身可安全入库
           authPassword:
             name: alertmanager-email-secret

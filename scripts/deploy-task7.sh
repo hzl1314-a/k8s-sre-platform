@@ -29,7 +29,7 @@ set -uo pipefail
 
 NS_MON="monitoring"
 NS_APP="boutique"
-EMAIL_TO="3304345637@qq.com"
+EMAIL_TO="${EMAIL_TO:-your-address@example.com}"   # 隐私：真实收件人不入库，执行时用环境变量传入
 DIR="$HOME/task7"
 DINGTALK_CONFIG="$HOME/dingtalk-config.yml"
 SKIP_RESTART=0
