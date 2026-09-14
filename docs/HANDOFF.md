@@ -57,7 +57,7 @@
 2. **任务 10：README 收口 + 简历**：把实测数字写进根 README 与简历 bullet——
    压测 24.66 req/s / P99 2.78s、演练可用率 99.03% 与 28.3%、告警触达 84s、
    恢复通知 502s、排水 11s 等（素材全在两份手册里）
-3. ✅ **杂项清零（2026-09-14 晚）**：`04-remote-kubectl.png` 已补截；远端仓库已建 boutique-k8s-project，push 执行中
+3. ✅ **杂项清零（2026-09-14 晚）**：`04-remote-kubectl.png` 已补截（合成图版，实拍版待用户按步骤重截）；仓库已 push：k8s-sre-platform（main + v1.0）
 
 ### 本机环境变化（比本文档旧版描述重要）
 
@@ -424,7 +424,7 @@ bash ~/alert-drill.sh --report       # 只读回填：从 Alertmanager 日志取
       `downloads/render-kps-{before,after}.out`
 - [ ] **push GitHub（用户选择延后，本地已全部就绪 2026-09-14）**：
       commit `4625483`（46 文件）+ tag `v1.0` 已打好，远端仓库未创建；
-      远端仓库已建：**https://github.com/hzl1314-a/boutique-k8s-project.git**（注意仓库名不是 k8s-sre-platform），
+      远端仓库：**https://github.com/hzl1314-a/k8s-sre-platform.git**（2026-09-14 深夜由 boutique-k8s-project 改名，GitHub 旧地址自动重定向），
       安全扫描已过（SMTP 走 Secret 引用、钉钉 token 已 ignore、无明文凭据）
 
 ---
